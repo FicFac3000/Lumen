@@ -1,0 +1,998 @@
+<title>Radial Action Menu</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: interaction stage on the left, inspector rail on the right; stacks at phone width.
+   Single-theme dark by choice — this is console software, operated in a dark venue. */
+:root {
+  --bg: #0a0d13;
+  --surface: #131924;
+  --surface-2: #1c2431;
+  --line: #2a3443;
+  --line-soft: #202836;
+  --fg: #e6eaf0;
+  --fg-dim: #8c99ab;
+  --fg-faint: #5c6878;
+  /* Accent is tungsten at 3200K — the colour temperature of the lamps this desk drives. */
+  --accent: #ffb04a;
+  --accent-soft: rgba(255, 176, 74, 0.14);
+  --branch: #74b8d8;
+  --danger: #e2685f;
+  --font-ui: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-arc: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  min-height: 100%;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 28px;
+  max-width: 1240px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ---------- masthead ---------- */
+.mast { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
+.mast h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+.mast .sub { margin: 0; color: var(--fg-dim); font-size: 13px; }
+.tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 2px 6px;
+}
+
+/* ---------- main split ---------- */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 316px;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .split { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- stage ---------- */
+.stage {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  min-height: 520px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.stage-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.hint { color: var(--fg-dim); text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 12px; }
+.hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--fg);
+}
+
+/* fixture grid — the object layer menus are opened on */
+.grid {
+  padding: 16px 14px 22px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+  transition: opacity 160ms ease;
+}
+.grid.dimmed { opacity: 0.42; }
+
+.cell {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 8px 9px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+  transition: opacity 160ms ease, border-color 120ms ease, background 120ms ease;
+}
+.cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cell .id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.cell .nm {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cell .bar { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.cell .bar i { display: block; height: 100%; background: var(--accent); opacity: 0.8; }
+.cell.selected { border-color: var(--accent); background: var(--accent-soft); }
+.cell.is-target { opacity: 1 !important; border-color: var(--accent); }
+.grid.dimmed .cell.is-target { box-shadow: 0 0 0 1px var(--accent); }
+
+/* menu overlay */
+.overlay { position: absolute; inset: 0; pointer-events: none; }
+.overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+.sector { cursor: pointer; }
+.sector-fill { fill: var(--surface-2); stroke: var(--line); stroke-width: 1; transition: fill 90ms linear; }
+.sector.hot .sector-fill { fill: var(--accent-soft); stroke: var(--accent); }
+.sector.branch .sector-fill { fill: #1a2330; }
+.sector.branch.hot .sector-fill { fill: var(--accent-soft); stroke: var(--accent); }
+.sector-label { font-family: var(--font-arc); font-size: 12.5px; fill: var(--fg); pointer-events: none; }
+.sector.hot .sector-label { fill: var(--accent); }
+.sector-icon { font-size: 13px; fill: var(--fg-dim); pointer-events: none; }
+.sector.hot .sector-icon { fill: var(--accent); }
+.chev { fill: none; stroke: var(--branch); stroke-width: 1.4; pointer-events: none; }
+.sector.hot .chev { stroke: var(--accent); }
+
+.hub-fill { fill: var(--surface); stroke: var(--line); stroke-width: 1; cursor: pointer; }
+.hub.hot .hub-fill { stroke: var(--danger); }
+.hub-label { font-family: var(--font-arc); font-size: 11.5px; fill: var(--fg-dim); pointer-events: none; }
+.hub.hot .hub-label { fill: var(--danger); }
+.crumb { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0.55; stroke-linecap: round; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0ms !important; }
+}
+
+/* ---------- rail ---------- */
+.rail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  min-width: 0;
+}
+.panel > h2 {
+  margin: 0;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.panel-body { padding: 11px 12px 13px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+.row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.row label { font-size: 12.5px; color: var(--fg-dim); }
+.row output {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  min-width: 46px;
+  text-align: right;
+}
+input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0; }
+
+.seg { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.seg button {
+  flex: 1;
+  background: var(--surface-2);
+  color: var(--fg-dim);
+  border: 0;
+  padding: 6px 4px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.checks { display: flex; flex-direction: column; gap: 7px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--fg-dim); cursor: pointer; }
+.check input { accent-color: var(--accent); margin: 0; }
+
+/* tree */
+.tree { font-family: var(--font-mono); font-size: 11.5px; max-height: 210px; overflow: auto; }
+.tnode { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--fg-dim); padding: 2px 4px; cursor: pointer; border-radius: 2px; font: inherit; }
+.tnode:hover, .tnode:focus-visible { background: var(--surface-2); color: var(--fg); outline: none; }
+.tnode .br { color: var(--branch); }
+.tnode .cmd { color: var(--fg-faint); }
+
+/* log */
+.log { font-family: var(--font-mono); font-size: 11.5px; max-height: 150px; overflow: auto; display: flex; flex-direction: column-reverse; gap: 3px; }
+.log p { margin: 0; color: var(--fg-dim); }
+.log p b { color: var(--accent); font-weight: 500; }
+.log p.empty { color: var(--fg-faint); }
+
+textarea {
+  width: 100%;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 7px 8px;
+  resize: vertical;
+  min-height: 110px;
+}
+textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.btn {
+  background: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 6px 11px;
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.err { font-family: var(--font-mono); font-size: 11px; color: var(--danger); margin: 0; }
+
+.foot { color: var(--fg-faint); font-size: 12px; max-width: 68ch; }
+.foot code { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@400;500&display=swap">
+
+<div class="wrap">
+  <header class="mast">
+    <h1>Radial Action Menu</h1>
+    <span class="tag">Lumen · interaction proto</span>
+    <p class="sub">Every sector fires a console command string, so the ring is a macro with a radial skin.</p>
+  </header>
+
+  <div class="split">
+    <section class="stage" id="stage">
+      <div class="stage-head">
+        <span>Fixture Sheet · Universe 1</span>
+        <span class="hint">Hold <kbd>220ms</kbd> on a cell, or <kbd>right-click</kbd> it. Keep holding to drill into a branch.</span>
+      </div>
+      <div class="grid" id="grid"></div>
+      <div class="overlay" id="overlay" hidden>
+        <svg id="svg" aria-hidden="true"></svg>
+      </div>
+    </section>
+
+    <div class="rail">
+      <section class="panel">
+        <h2>Navigation</h2>
+        <div class="panel-body">
+          <div class="seg" role="group" aria-label="Navigation mode">
+            <button type="button" id="mode-drill" aria-pressed="true">Drill (held)</button>
+            <button type="button" id="mode-step" aria-pressed="false">Step (tapped)</button>
+          </div>
+          <div class="row">
+            <label for="hold">Branch auto-open</label>
+            <output id="hold-out">180 ms</output>
+            <input type="range" id="hold" min="60" max="600" step="20" value="180">
+          </div>
+          <div class="checks">
+            <label class="check"><input type="checkbox" id="flick" checked> Flick outward to execute</label>
+            <label class="check"><input type="checkbox" id="labels" checked> Show labels</label>
+            <label class="check"><input type="checkbox" id="icons" checked> Show icons</label>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Ring geometry</h2>
+        <div class="panel-body">
+          <div class="row">
+            <label for="inner">Inner radius</label>
+            <output id="inner-out">62 px</output>
+            <input type="range" id="inner" min="40" max="110" step="2" value="62">
+          </div>
+          <div class="row">
+            <label for="outer">Outer radius</label>
+            <output id="outer-out">136 px</output>
+            <input type="range" id="outer" min="100" max="210" step="2" value="136">
+          </div>
+          <div class="row">
+            <label for="gap">Sector gap</label>
+            <output id="gap-out">2.4°</output>
+            <input type="range" id="gap" min="0" max="8" step="0.2" value="2.4">
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Menu tree · fixture</h2>
+        <div class="panel-body">
+          <div class="tree" id="tree"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Command log</h2>
+        <div class="panel-body">
+          <div class="log" id="log"><p class="empty">No command fired yet.</p></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Tree source</h2>
+        <div class="panel-body">
+          <textarea id="src" spellcheck="false" aria-label="Menu tree JSON"></textarea>
+          <p class="err" id="src-err" hidden></p>
+          <button type="button" class="btn" id="apply">Apply tree</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <p class="foot">
+    A sector is a <strong>leaf</strong> (fires its <code>command</code>) or a <strong>branch</strong> (chevron on the
+    outer edge, opens its children in place). The parent collapses to a breadcrumb arc inside the hub; tap the hub to
+    step back, or tap it at the root to close. Node shape is
+    <code>{ label, icon, command, children }</code> — identical to a macro line.
+  </p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------- data
+  var FIXTURES = [
+    { id: 11, name: "Spot L1", lvl: 0.0 },
+    { id: 12, name: "Spot L2", lvl: 0.78 },
+    { id: 13, name: "Spot L3", lvl: 0.0 },
+    { id: 14, name: "Spot L4", lvl: 0.35 },
+    { id: 21, name: "Beam R1", lvl: 0.0 },
+    { id: 22, name: "Beam R2", lvl: 0.0 },
+    { id: 23, name: "Beam R3", lvl: 0.62 },
+    { id: 24, name: "Beam R4", lvl: 0.0 },
+    { id: 31, name: "Strike M", lvl: 0.0 },
+    { id: 32, name: "Strike M", lvl: 0.0 },
+    { id: 41, name: "PixCurve", lvl: 0.18 },
+    { id: 42, name: "PixCurve", lvl: 0.18 },
+    { id: 51, name: "Tornado", lvl: 0.0 },
+    { id: 52, name: "Tornado", lvl: 0.0 },
+    { id: 61, name: "Wash CYC", lvl: 0.5 },
+    { id: 62, name: "Wash CYC", lvl: 0.5 }
+  ];
+
+  // Sector 0 is top; sectors run clockwise. With six sectors, index 3 sits at
+  // the bottom — that is the branch that opens the second set of actions.
+  var DEFAULT_TREE = {
+    label: "Fixture",
+    children: [
+      { label: "Intensity", icon: "◐", children: [
+        { label: "At Full", command: "Fixture $ At 100" },
+        { label: "At 50", command: "Fixture $ At 50" },
+        { label: "At 0", command: "Fixture $ At 0" },
+        { label: "Fade 3s", command: "Fixture $ At 100 Fade 3" },
+        { label: "Highlight", command: "Highlight Fixture $" }
+      ]},
+      { label: "Color", icon: "◉", children: [
+        { label: "Open", command: "Fixture $ Color Open" },
+        { label: "Red", command: "Fixture $ Color Red" },
+        { label: "Blue", command: "Fixture $ Color Blue" },
+        { label: "Picker", command: "Open ColorPicker Fixture $" },
+        { label: "Store Pal", command: "Store Preset Color" }
+      ]},
+      { label: "Position", icon: "✛", children: [
+        { label: "Home", command: "Fixture $ Position Home" },
+        { label: "Center", command: "Fixture $ Position Center" },
+        { label: "Fan", command: "Fixture $ Fan Position" },
+        { label: "Store Pal", command: "Store Preset Position" }
+      ]},
+      { label: "More", icon: "⋯", children: [
+        { label: "FX", icon: "∿", children: [
+          { label: "Circle", command: "Fixture $ Recipe Circle" },
+          { label: "Sine Dim", command: "Fixture $ Recipe SineDim" },
+          { label: "Rainbow", command: "Fixture $ Recipe Rainbow" },
+          { label: "Stop FX", command: "Fixture $ Recipe Off" },
+          { label: "Editor", command: "Open PhaserEditor" }
+        ]},
+        { label: "Store", icon: "▼", children: [
+          { label: "Store Cue", command: "Store Cue" },
+          { label: "Store Group", command: "Store Group" },
+          { label: "Store Preset", command: "Store Preset" },
+          { label: "Update", command: "Update Cue" }
+        ]},
+        { label: "Patch", icon: "⊞", children: [
+          { label: "Edit Fixture", command: "Open FixtureEditor Fixture $" },
+          { label: "Readdress", command: "Patch Fixture $ At" },
+          { label: "Unpatch", command: "Unpatch Fixture $" },
+          { label: "Builder", command: "Open GdtfBuilder" }
+        ]},
+        { label: "Groups", icon: "☰", children: [
+          { label: "Add To", command: "Assign Fixture $ Group" },
+          { label: "New Group", command: "Store Group" },
+          { label: "Remove", command: "Delete Fixture $ Group" }
+        ]},
+        { label: "Blind", icon: "◯", children: [
+          { label: "Blind On", command: "Blind On" },
+          { label: "Preview", command: "Preview Cue" },
+          { label: "Blind Off", command: "Blind Off" }
+        ]},
+        { label: "Window", icon: "⌸", children: [
+          { label: "Fixtures", command: "Open FixtureSheet" },
+          { label: "Patch", command: "Open Patch" },
+          { label: "Phasers", command: "Open PhaserEditor" },
+          { label: "Layout", command: "Open LayoutGrid" }
+        ]}
+      ]},
+      { label: "Clear", icon: "⌫", command: "Clear" },
+      { label: "Select", icon: "▣", command: "Fixture $" }
+    ]
+  };
+
+  var tree = clone(DEFAULT_TREE);
+
+  var cfg = {
+    mode: "drill",
+    holdMs: 180,
+    flick: true,
+    labels: true,
+    icons: true,
+    inner: 62,
+    outer: 136,
+    gap: 2.4
+  };
+
+  // menu state
+  var open = false;
+  var path = [];          // [{ node, sector }] chosen branches
+  var level = null;       // node whose children the ring shows
+  var cx = 0, cy = 0;
+  var target = null;      // fixture the menu was opened on
+  var hot = -1;           // highlighted sector, -1 none, -2 hub
+  var gesture = false;    // pointer still down from the long press
+  var holdTimer = 0;
+  var holdSector = -1;
+  var pressTimer = 0;
+  var pressCell = null;
+  var selected = 12;
+
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var stage = byId("stage");
+  var grid = byId("grid");
+  var overlay = byId("overlay");
+  var svg = byId("svg");
+  var logEl = byId("log");
+
+  function byId(id) { return document.getElementById(id); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function isBranch(n) { return !!(n && n.children && n.children.length); }
+
+  // ---------------------------------------------------------------- grid
+  function drawGrid() {
+    grid.textContent = "";
+    FIXTURES.forEach(function (f) {
+      var c = document.createElement("div");
+      c.className = "cell" + (f.id === selected ? " selected" : "");
+      c.tabIndex = 0;
+      c.dataset.id = String(f.id);
+      c.setAttribute("role", "button");
+      c.setAttribute("aria-label", "Fixture " + f.id + " " + f.name);
+
+      var id = document.createElement("span");
+      id.className = "id";
+      id.textContent = String(f.id);
+      var nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = f.name;
+      var bar = document.createElement("span");
+      bar.className = "bar";
+      var fill = document.createElement("i");
+      fill.style.width = Math.round(f.lvl * 100) + "%";
+      bar.appendChild(fill);
+
+      c.appendChild(id);
+      c.appendChild(nm);
+      c.appendChild(bar);
+      grid.appendChild(c);
+    });
+  }
+
+  function cellFrom(ev) {
+    var el = ev.target instanceof Element ? ev.target.closest(".cell") : null;
+    return el;
+  }
+
+  // ---------------------------------------------------------------- geometry
+  function stepDeg() { return 360 / level.children.length; }
+
+  function sectorAt(angle) {
+    var n = level.children.length;
+    var step = 360 / n;
+    var rel = angle + 90 + step / 2;
+    rel = ((rel % 360) + 360) % 360;
+    return Math.floor(rel / step) % n;
+  }
+
+  function centerAngle(i) { return -90 + i * stepDeg(); }
+
+  function pt(r, deg) {
+    var a = deg * Math.PI / 180;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  }
+
+  function arcPath(iR, oR, a0, a1) {
+    var p0 = pt(iR, a0), p1 = pt(oR, a0), p2 = pt(oR, a1), p3 = pt(iR, a1);
+    var big = (a1 - a0) > 180 ? 1 : 0;
+    return "M" + p0[0].toFixed(2) + " " + p0[1].toFixed(2) +
+           "L" + p1[0].toFixed(2) + " " + p1[1].toFixed(2) +
+           "A" + oR + " " + oR + " 0 " + big + " 1 " + p2[0].toFixed(2) + " " + p2[1].toFixed(2) +
+           "L" + p3[0].toFixed(2) + " " + p3[1].toFixed(2) +
+           "A" + iR + " " + iR + " 0 " + big + " 0 " + p0[0].toFixed(2) + " " + p0[1].toFixed(2) + "Z";
+  }
+
+  function ringArc(r, a0, a1) {
+    var p0 = pt(r, a0), p1 = pt(r, a1);
+    var big = (a1 - a0) > 180 ? 1 : 0;
+    return "M" + p0[0].toFixed(2) + " " + p0[1].toFixed(2) +
+           "A" + r + " " + r + " 0 " + big + " 1 " + p1[0].toFixed(2) + " " + p1[1].toFixed(2);
+  }
+
+  function el(name, attrs, cls) {
+    var n = document.createElementNS(SVGNS, name);
+    if (cls) n.setAttribute("class", cls);
+    for (var k in attrs) if (Object.prototype.hasOwnProperty.call(attrs, k)) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+
+  // ---------------------------------------------------------------- render
+  function render() {
+    svg.textContent = "";
+    if (!open || !level) return;
+
+    var iR = cfg.inner, oR = Math.max(cfg.inner + 34, cfg.outer);
+    var n = level.children.length;
+    var step = 360 / n;
+    var g = cfg.gap;
+
+    for (var i = 0; i < n; i++) {
+      var node = level.children[i];
+      var c = centerAngle(i);
+      var a0 = c - step / 2 + g / 2;
+      var a1 = c + step / 2 - g / 2;
+      var branch = isBranch(node);
+
+      var grp = el("g", { "data-sector": String(i) },
+        "sector" + (branch ? " branch" : "") + (hot === i ? " hot" : ""));
+      grp.appendChild(el("path", { d: arcPath(iR, oR, a0, a1) }, "sector-fill"));
+
+      var midR = (iR + oR) / 2;
+      var hasIcon = cfg.icons && node.icon;
+      var hasLabel = cfg.labels && node.label;
+      var p;
+
+      if (hasIcon && hasLabel) {
+        p = pt(midR + 7, c);
+        var ic = el("text", { x: p[0].toFixed(1), y: p[1].toFixed(1), "text-anchor": "middle" }, "sector-icon");
+        ic.textContent = node.icon;
+        grp.appendChild(ic);
+        p = pt(midR - 11, c);
+        var tx = el("text", { x: p[0].toFixed(1), y: p[1].toFixed(1), "text-anchor": "middle",
+          "dominant-baseline": "middle" }, "sector-label");
+        tx.textContent = node.label;
+        grp.appendChild(tx);
+      } else if (hasLabel || hasIcon) {
+        p = pt(midR, c);
+        var only = el("text", { x: p[0].toFixed(1), y: p[1].toFixed(1), "text-anchor": "middle",
+          "dominant-baseline": "middle" }, hasLabel ? "sector-label" : "sector-icon");
+        only.textContent = hasLabel ? node.label : node.icon;
+        grp.appendChild(only);
+      }
+
+      if (branch) {
+        // chevron on the outer edge marks "this opens another ring"
+        var cr = oR - 9;
+        var w = 4.6;
+        var q0 = pt(cr - 3.4, c - w), q1 = pt(cr + 1.6, c), q2 = pt(cr - 3.4, c + w);
+        grp.appendChild(el("path", {
+          d: "M" + q0[0].toFixed(1) + " " + q0[1].toFixed(1) +
+             "L" + q1[0].toFixed(1) + " " + q1[1].toFixed(1) +
+             "L" + q2[0].toFixed(1) + " " + q2[1].toFixed(1)
+        }, "chev"));
+      }
+      svg.appendChild(grp);
+    }
+
+    // breadcrumb arcs: one tick per level already drilled through
+    for (var d = 0; d < path.length; d++) {
+      var par = d === 0 ? tree : path[d - 1].node;
+      var pn = par.children.length;
+      var pstep = 360 / pn;
+      var pc = -90 + path[d].sector * pstep;
+      var r = iR - 11 - d * 7;
+      if (r > 14) {
+        svg.appendChild(el("path", { d: ringArc(r, pc - pstep / 2 + 4, pc + pstep / 2 - 4) }, "crumb"));
+      }
+    }
+
+    // hub: cancel at the root, step back once drilled in
+    var hubR = Math.max(18, iR - 11 - path.length * 7 - 8);
+    var hub = el("g", { "data-hub": "1" }, "hub" + (hot === -2 ? " hot" : ""));
+    hub.appendChild(el("circle", { cx: cx.toFixed(1), cy: cy.toFixed(1), r: hubR.toFixed(1) }, "hub-fill"));
+    var hl = el("text", { x: cx.toFixed(1), y: cy.toFixed(1), "text-anchor": "middle",
+      "dominant-baseline": "middle" }, "hub-label");
+    hl.textContent = path.length ? "← " + level.label : ("Fx " + (target ? target.id : ""));
+    hub.appendChild(hl);
+    svg.appendChild(hub);
+  }
+
+  // ---------------------------------------------------------------- open/close
+  function openMenu(x, y, cell, continuous) {
+    var rect = stage.getBoundingClientRect();
+    var oR = Math.max(cfg.inner + 34, cfg.outer);
+    var pad = oR + 12;
+    cx = Math.min(Math.max(x - rect.left, pad), rect.width - pad);
+    cy = Math.min(Math.max(y - rect.top, pad), rect.height - pad);
+
+    var id = cell ? Number(cell.dataset.id) : selected;
+    target = null;
+    for (var i = 0; i < FIXTURES.length; i++) if (FIXTURES[i].id === id) target = FIXTURES[i];
+
+    open = true;
+    path = [];
+    level = tree;
+    hot = -1;
+    gesture = !!continuous;
+
+    overlay.hidden = false;
+    overlay.style.pointerEvents = "auto";
+    grid.classList.add("dimmed");
+    var cells = grid.querySelectorAll(".cell");
+    for (var k = 0; k < cells.length; k++) {
+      cells[k].classList.toggle("is-target", Number(cells[k].dataset.id) === id);
+    }
+    render();
+  }
+
+  function closeMenu() {
+    open = false;
+    gesture = false;
+    clearTimeout(holdTimer);
+    holdSector = -1;
+    overlay.hidden = true;
+    overlay.style.pointerEvents = "none";
+    grid.classList.remove("dimmed");
+    var cells = grid.querySelectorAll(".cell");
+    for (var k = 0; k < cells.length; k++) cells[k].classList.remove("is-target");
+    svg.textContent = "";
+  }
+
+  function drill(i) {
+    var node = level.children[i];
+    if (!isBranch(node)) return;
+    path.push({ node: node, sector: i });
+    level = node;
+    hot = -1;
+    holdSector = -1;
+    clearTimeout(holdTimer);
+    render();
+  }
+
+  function back() {
+    if (!path.length) { closeMenu(); return; }
+    path.pop();
+    level = path.length ? path[path.length - 1].node : tree;
+    hot = -1;
+    render();
+  }
+
+  function fire(i) {
+    var node = level.children[i];
+    if (!node) return;
+    var cmd = String(node.command || "").replace(/\$/g, target ? String(target.id) : "");
+    if (node.label === "Select" && target) { selected = target.id; }
+    logLine(cmd || node.label, breadcrumbText(node));
+    closeMenu();
+    drawGrid();
+  }
+
+  function breadcrumbText(node) {
+    var parts = [];
+    for (var i = 0; i < path.length; i++) parts.push(path[i].node.label);
+    parts.push(node.label);
+    return parts.join(" › ");
+  }
+
+  function logLine(cmd, where) {
+    var empty = logEl.querySelector(".empty");
+    if (empty) empty.remove();
+    var p = document.createElement("p");
+    var b = document.createElement("b");
+    b.textContent = cmd;
+    p.appendChild(b);
+    var s = document.createElement("span");
+    s.textContent = "  · " + where;
+    p.appendChild(s);
+    logEl.appendChild(p);
+    while (logEl.children.length > 40) logEl.removeChild(logEl.firstChild);
+  }
+
+  // ---------------------------------------------------------------- hit test
+  function hitTest(clientX, clientY) {
+    var rect = stage.getBoundingClientRect();
+    var dx = clientX - rect.left - cx;
+    var dy = clientY - rect.top - cy;
+    var r = Math.sqrt(dx * dx + dy * dy);
+    var iR = cfg.inner, oR = Math.max(cfg.inner + 34, cfg.outer);
+    var hubR = Math.max(18, iR - 11 - path.length * 7 - 8);
+    if (r <= hubR) return { kind: "hub", r: r };
+    if (r < iR) return { kind: "none", r: r };
+    var ang = Math.atan2(dy, dx) * 180 / Math.PI;
+    var i = sectorAt(ang);
+    if (r > oR * 1.42) return { kind: "flick", sector: i, r: r };
+    if (r > oR) return { kind: "outside", sector: i, r: r };
+    return { kind: "sector", sector: i, r: r };
+  }
+
+  function setHot(v) {
+    if (hot === v) return;
+    hot = v;
+    render();
+  }
+
+  function trackHold(i) {
+    if (holdSector === i) return;
+    holdSector = i;
+    clearTimeout(holdTimer);
+    if (i < 0) return;
+    var node = level.children[i];
+    if (!isBranch(node)) return;
+    holdTimer = setTimeout(function () {
+      if (open && gesture && hot === i) drill(i);
+    }, cfg.holdMs);
+  }
+
+  // ---------------------------------------------------------------- events
+  grid.addEventListener("pointerdown", function (ev) {
+    if (open) return;
+    var cell = cellFrom(ev);
+    if (!cell) return;
+    if (ev.button === 2) return;
+    pressCell = cell;
+    var x = ev.clientX, y = ev.clientY;
+    clearTimeout(pressTimer);
+    pressTimer = setTimeout(function () {
+      pressCell = null;
+      openMenu(x, y, cell, cfg.mode === "drill");
+    }, 220);
+  });
+
+  grid.addEventListener("pointerup", function (ev) {
+    clearTimeout(pressTimer);
+    if (pressCell) {
+      var id = Number(pressCell.dataset.id);
+      selected = id;
+      pressCell = null;
+      drawGrid();
+    }
+  });
+
+  grid.addEventListener("pointercancel", function () { clearTimeout(pressTimer); pressCell = null; });
+  grid.addEventListener("pointerleave", function () { clearTimeout(pressTimer); pressCell = null; });
+
+  stage.addEventListener("contextmenu", function (ev) {
+    var cell = cellFrom(ev);
+    ev.preventDefault();
+    if (open) { closeMenu(); return; }
+    if (cell) openMenu(ev.clientX, ev.clientY, cell, false);
+  });
+
+  grid.addEventListener("keydown", function (ev) {
+    var cell = ev.target instanceof Element ? ev.target.closest(".cell") : null;
+    if (!cell) return;
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      var r = cell.getBoundingClientRect();
+      openMenu(r.left + r.width / 2, r.top + r.height / 2, cell, false);
+    }
+  });
+
+  overlay.addEventListener("pointermove", function (ev) {
+    if (!open) return;
+    var h = hitTest(ev.clientX, ev.clientY);
+    if (h.kind === "hub") { setHot(-2); trackHold(-1); return; }
+    if (h.kind === "none") { setHot(-1); trackHold(-1); return; }
+
+    setHot(h.sector);
+    if (gesture) {
+      trackHold(h.sector);
+      if (cfg.flick && h.kind === "flick") {
+        var node = level.children[h.sector];
+        if (isBranch(node)) drill(h.sector);
+        else fire(h.sector);
+      }
+    }
+  });
+
+  overlay.addEventListener("pointerup", function (ev) {
+    if (!open) return;
+    var h = hitTest(ev.clientX, ev.clientY);
+    clearTimeout(holdTimer);
+
+    if (h.kind === "hub") {
+      if (gesture) { gesture = false; setHot(-1); return; }
+      back();
+      return;
+    }
+    if (h.kind === "none" || h.kind === "outside" || h.kind === "flick") {
+      if (gesture) { gesture = false; setHot(-1); return; }
+      closeMenu();
+      return;
+    }
+
+    var node = level.children[h.sector];
+    if (isBranch(node)) drill(h.sector);
+    else fire(h.sector);
+    gesture = false;
+  });
+
+  overlay.addEventListener("pointerdown", function (ev) {
+    if (!open) return;
+    var h = hitTest(ev.clientX, ev.clientY);
+    if (h.kind === "sector") {
+      gesture = true;
+      setHot(h.sector);
+      trackHold(h.sector);
+    }
+  });
+
+  overlay.addEventListener("pointercancel", function () { gesture = false; clearTimeout(holdTimer); });
+
+  document.addEventListener("keydown", function (ev) {
+    if (!open) return;
+    if (ev.key === "Escape") { closeMenu(); }
+    else if (ev.key === "Backspace") { ev.preventDefault(); back(); }
+  });
+
+  // ---------------------------------------------------------------- tree panel
+  function drawTree() {
+    var host = byId("tree");
+    host.textContent = "";
+    walk(tree, 0);
+
+    function walk(node, depth) {
+      if (!node.children) return;
+      for (var i = 0; i < node.children.length; i++) {
+        var n = node.children[i];
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "tnode";
+        var pad = "";
+        for (var d = 0; d < depth; d++) pad += "│ ";
+        var mark = document.createElement("span");
+        mark.className = isBranch(n) ? "br" : "";
+        mark.textContent = pad + (isBranch(n) ? "▸ " : "· ") + n.label;
+        b.appendChild(mark);
+        if (n.command) {
+          var c = document.createElement("span");
+          c.className = "cmd";
+          c.textContent = "   " + n.command;
+          b.appendChild(c);
+        }
+        (function (nn) {
+          b.addEventListener("click", function () {
+            if (nn.command) logLine(nn.command.replace(/\$/g, String(selected)), "tree");
+          });
+        })(n);
+        host.appendChild(b);
+        walk(n, depth + 1);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- controls
+  function bindRange(id, key, fmt) {
+    var input = byId(id), out = byId(id + "-out");
+    function sync() {
+      cfg[key] = Number(input.value);
+      out.textContent = fmt(cfg[key]);
+      if (open) render();
+    }
+    input.addEventListener("input", sync);
+    sync();
+  }
+
+  bindRange("hold", "holdMs", function (v) { return v + " ms"; });
+  bindRange("inner", "inner", function (v) { return v + " px"; });
+  bindRange("outer", "outer", function (v) { return v + " px"; });
+  bindRange("gap", "gap", function (v) { return v.toFixed(1) + "°"; });
+
+  byId("flick").addEventListener("change", function (e) { cfg.flick = e.target.checked; });
+  byId("labels").addEventListener("change", function (e) { cfg.labels = e.target.checked; if (open) render(); });
+  byId("icons").addEventListener("change", function (e) { cfg.icons = e.target.checked; if (open) render(); });
+
+  var mDrill = byId("mode-drill"), mStep = byId("mode-step");
+  mDrill.addEventListener("click", function () {
+    cfg.mode = "drill";
+    mDrill.setAttribute("aria-pressed", "true");
+    mStep.setAttribute("aria-pressed", "false");
+  });
+  mStep.addEventListener("click", function () {
+    cfg.mode = "step";
+    mStep.setAttribute("aria-pressed", "true");
+    mDrill.setAttribute("aria-pressed", "false");
+  });
+
+  var src = byId("src");
+  src.value = JSON.stringify(tree, null, 2);
+  byId("apply").addEventListener("click", function () {
+    var err = byId("src-err");
+    try {
+      var parsed = JSON.parse(src.value);
+      if (!parsed || !parsed.children || !parsed.children.length) throw new Error("root needs a children array");
+      tree = parsed;
+      err.hidden = true;
+      closeMenu();
+      drawTree();
+      logLine("Menu tree replaced", "tree source");
+    } catch (e) {
+      err.hidden = false;
+      err.textContent = String(e.message || e);
+    }
+  });
+
+  // ---------------------------------------------------------------- boot
+  drawGrid();
+  drawTree();
+
+  // Open the ring at rest over fixture 12, so the page shows the thing itself.
+  requestAnimationFrame(function () {
+    var cell = grid.querySelector('.cell[data-id="12"]');
+    if (!cell) return;
+    var r = cell.getBoundingClientRect();
+    openMenu(r.left + r.width / 2 + 120, r.top + r.height / 2 + 150, cell, false);
+  });
+})();
+</script>
