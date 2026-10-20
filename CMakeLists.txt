@@ -16,6 +16,7 @@ add_library(lumen_core
   src/Patch.cpp
   src/Selection.cpp
   src/Programmer.cpp
+  src/Phaser.cpp
   src/Output.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
@@ -37,3 +38,9 @@ target_link_libraries(test_programmer PRIVATE lumen_core)
 target_include_directories(test_programmer PRIVATE tests)
 target_compile_options(test_programmer PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME programmer COMMAND test_programmer)
+
+add_executable(test_phaser tests/test_phaser.cpp)
+target_link_libraries(test_phaser PRIVATE lumen_core)
+target_include_directories(test_phaser PRIVATE tests)
+target_compile_options(test_phaser PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME phaser COMMAND test_phaser)
