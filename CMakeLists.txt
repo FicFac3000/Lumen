@@ -17,6 +17,8 @@ add_library(lumen_core
   src/Selection.cpp
   src/Programmer.cpp
   src/Phaser.cpp
+  src/Cue.cpp
+  src/Engine.cpp
   src/Output.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
@@ -44,3 +46,15 @@ target_link_libraries(test_phaser PRIVATE lumen_core)
 target_include_directories(test_phaser PRIVATE tests)
 target_compile_options(test_phaser PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME phaser COMMAND test_phaser)
+
+add_executable(test_cue tests/test_cue.cpp)
+target_link_libraries(test_cue PRIVATE lumen_core)
+target_include_directories(test_cue PRIVATE tests)
+target_compile_options(test_cue PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME cue COMMAND test_cue)
+
+add_executable(test_engine tests/test_engine.cpp)
+target_link_libraries(test_engine PRIVATE lumen_core)
+target_include_directories(test_engine PRIVATE tests)
+target_compile_options(test_engine PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME engine COMMAND test_engine)

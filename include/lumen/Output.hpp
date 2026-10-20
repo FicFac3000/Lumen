@@ -9,6 +9,13 @@
 
 namespace lumen {
 
+// A rendered DMX universe. 1-based numbering, matching how consoles and nodes
+// address them.
+struct Universe {
+    int number = 1;
+    std::array<uint8_t, 512> data{};
+};
+
 // sACN packet geometry (ANSI E1.31-2018, DMP layer, 512 slots).
 inline constexpr size_t kSacnRootOffset = 16;
 inline constexpr size_t kSacnFramingOffset = 38;

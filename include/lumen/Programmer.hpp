@@ -6,6 +6,7 @@
 #pragma once
 
 #include "lumen/Patch.hpp"
+#include "lumen/Phaser.hpp"
 #include "lumen/Selection.hpp"
 #include "lumen/Value.hpp"
 
@@ -53,6 +54,12 @@ public:
     const ValueLayer& values() const { return values_; }
     ValueLayer& values() { return values_; }
 
+    // Programmer FX (§4.17). These run live on the global clock, so a busked
+    // effect does not restart when a cue changes.
+    void addPhaser(Phaser p);
+    std::vector<Phaser>& phasers() { return phasers_; }
+    const std::vector<Phaser>& phasers() const { return phasers_; }
+
     // Clear ----------------------------------------------------------------
     ClearResult clear();            // state-driven staged clear
     ClearResult clearPresets();     // Shift+Clear
@@ -60,7 +67,7 @@ public:
     ClearResult defaultUnused();    // Shift+Alt+Clear
     void flatten();                 // refs resolve to literals and stay
 
-    bool empty() const { return values_.empty() && sel_.empty(); }
+    bool empty() const { return values_.empty() && sel_.empty() && phasers_.empty(); }
 
     // Store: only ACTIVE values store, and references store AS references so
     // editing the preset updates every cue using it (§11.8).
@@ -88,6 +95,7 @@ private:
     const Patch* patch_;
     Selection sel_;
     ValueLayer values_;
+    std::vector<Phaser> phasers_;
 };
 
 } // namespace lumen

@@ -74,8 +74,9 @@ ClearResult Programmer::clear() {
         values_.deactivateAll();
         return ClearResult::Active;
     }
-    if (!values_.empty()) {
+    if (!values_.empty() || !phasers_.empty()) {
         values_.clear();
+        phasers_.clear();
         return ClearResult::All;
     }
     // Empty programmer: the key usefully doubles as a command-line escape.
@@ -89,10 +90,26 @@ ClearResult Programmer::clearPresets() {
 }
 
 ClearResult Programmer::clearAll() {
-    const bool had = !values_.empty() || !sel_.empty();
+    const bool had = !values_.empty() || !sel_.empty() || !phasers_.empty();
     values_.clear();
+    phasers_.clear();
     sel_.clear();
     return had ? ClearResult::All : ClearResult::Nothing;
+}
+
+void Programmer::addPhaser(Phaser p) {
+    if (p.targets.empty()) p.targets = sel_.flatten();
+    if (p.targets.empty()) return;
+    // Replace an existing phaser on the same attribute for the same targets,
+    // so re-applying a recipe edits rather than stacking (Replace is the
+    // default stack mode for a same-slot edit, SPEC 4.7).
+    for (auto& ex : phasers_) {
+        if (ex.attr == p.attr && ex.role == p.role && ex.targets == p.targets) {
+            ex = std::move(p);
+            return;
+        }
+    }
+    phasers_.push_back(std::move(p));
 }
 
 ClearResult Programmer::defaultUnused() {

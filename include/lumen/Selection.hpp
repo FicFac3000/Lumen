@@ -123,6 +123,12 @@ public:
     void build(const Selection& sel, const Patch& patch, SpreadSource source,
                uint64_t seed = 0, float centreX = 0.f, float centreY = 0.f);
 
+    // Same, from a bare target list — what a stored phaser carries, since it
+    // holds targets rather than a live selection.
+    void buildFromTargets(const std::vector<Target>& targets, const Patch& patch,
+                          SpreadSource source, uint64_t seed = 0,
+                          float centreX = 0.f, float centreY = 0.f);
+
     // Raw normalised spread for a target, before modifiers.
     float raw(const Target& t) const;
     // Spread with modifiers applied — what a phaser actually uses.

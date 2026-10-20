@@ -277,6 +277,14 @@ float applyModifiers(float spread, const SpreadModifiers& m, size_t n) {
     return s;
 }
 
+void SpreadTable::buildFromTargets(const std::vector<Target>& targets, const Patch& patch,
+                                   SpreadSource source, uint64_t seed,
+                                   float centreX, float centreY) {
+    Selection s;
+    s.set(targets);
+    build(s, patch, source, seed, centreX, centreY);
+}
+
 void SpreadTable::build(const Selection& sel, const Patch& patch, SpreadSource source,
                         uint64_t seed, float centreX, float centreY) {
     order_ = sel.flatten();
