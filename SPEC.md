@@ -53,6 +53,45 @@ the same structure MA3's tree view exposes for multi-instance fixtures. So:
   colour per cell.
 - `[open]` Selection syntax for cells — MA3 uses `12.1 Thru 12.12`.
 
+#### 1.3.1 Decision: a channel offset is relative to its own instance
+
+`[done]` The authoring model numbers a channel from the start of the geometry
+that declares it, not from the start of the mode. On a plain geometry the two
+are the same, because its instance offset is zero; on an instanced one, a
+pixel's red is offset 0 and each GeometryReference's own offset places the
+whole cell.
+
+The alternative — offsets relative to the mode, as the GDTF *file* stores them
+— makes the first cell's numbering special and every other cell a correction
+to it. Twelve pixels then need twelve declarations, which is precisely the
+editing problem §1.2's tree view exists to remove.
+
+Consequences, all of them wanted:
+
+- Growing a cell definition **re-spaces its instances automatically**. Adding
+  white to a pixel bar moves cells 2–12 down by one each; leaving them
+  overlapping is never what the user meant.
+- Channels on *other* geometries are left where they are. Moving a fixture's
+  master channels because a cell grew would be a surprise, so the compile
+  reports the collision instead and the user decides.
+- Packing works per address space: within each cell, and across the mode only
+  when the mode has no cells at all. With cells present, whether the master
+  block sits before or after them is a layout decision, not a mechanical one.
+
+#### 1.3.2 Imported profiles are normalised
+
+`[done]` GDTF files in the wild declare a four-cell bar as twelve channels, one
+per instance. On import, where every reference to a shared geometry declares
+the same channels at the same offsets within its own instance, those
+declarations collapse into one against the shared geometry. The compiled result
+is identical — same channels, same addresses — only the editing surface
+changes.
+
+A group whose instances differ is left exactly as it is, and the importer says
+which instance stopped it. An LED bar whose last cell lacks a channel is a real
+fixture, and averaging it into a uniform cell would hand the user a wrong
+patch.
+
 ### 1.4 GDTF builder
 
 - `[want]` Built-in GDTF fixture builder — create a fixture from scratch,
@@ -3515,11 +3554,15 @@ Outcome: usable on a real rig.
 
 - GDTF import and the taxonomy mapping (§6.3) — **built**
 - MVR import (§17.5) — **built**: profiles, patch, positions, layer groups
+- Fixture editor: table + tree views (§1.2, §1.3) — **built** (model; the
+  views are data, not pixels, until §2 renders)
 - ChamSys `.hed` import from the user's own install (§1.1) — **blocked**, see
   §21.2
-- Fixture editor: table + tree views (§1.2, §1.3)
-- GDTF builder (§1.4)
-- MVR export (§17.5)
+- GDTF builder (§1.4) — authoring model done; writing a `.gdtf` package back
+  out is next, and MVR export depends on it
+- MVR export (§17.5) — blocked on GDTF export, since an MVR embeds profiles
+- Fixture library: a store of definitions on the engine, persisted in the show
+  and reachable from the command layer
 
 ### M5 — Bindings and I/O
 
@@ -3623,6 +3666,7 @@ Engine and show model, with the command layer as the only mutation path:
 | Command layer, privileges, agent schema | §16.2, §16.5 | built |
 | GDTF import, attribute mapping | §1.1, §6.3 | built |
 | MVR import | §17.5 | built |
+| Fixture editor: geometry tree, table and tree views | §1.2, §1.3 | built |
 
 Not started: rendering (§2 needs a display), bindings and I/O (§12, §18, §19),
 pixel and video (§13), laser (§14), session networking (§18.7), plugins and the

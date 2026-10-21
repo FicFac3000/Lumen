@@ -30,6 +30,7 @@ add_library(lumen_core
   src/Xml.cpp
   src/Zip.cpp
   src/Gdtf.cpp
+  src/FixtureEditor.cpp
   src/Mvr.cpp
   src/Output.cpp
 )
@@ -122,5 +123,11 @@ target_link_libraries(test_mvr PRIVATE lumen_core)
 target_include_directories(test_mvr PRIVATE tests)
 target_compile_options(test_mvr PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME mvr COMMAND test_mvr)
+
+add_executable(test_editor tests/test_editor.cpp)
+target_link_libraries(test_editor PRIVATE lumen_core)
+target_include_directories(test_editor PRIVATE tests)
+target_compile_options(test_editor PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME editor COMMAND test_editor)
 
 

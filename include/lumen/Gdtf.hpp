@@ -10,6 +10,7 @@
 // silently losing a channel.
 #pragma once
 
+#include "lumen/FixtureEditor.hpp"
 #include "lumen/Patch.hpp"
 
 #include <map>
@@ -58,6 +59,14 @@ struct GdtfInfo {
     std::string fixtureTypeId;
     std::string description;
     std::vector<GdtfMode> modes;
+
+    // The editable source (§1.2). `modes[i].type` is what the engine patches;
+    // this is what the fixture editor's table and tree views work on, with the
+    // geometry tree intact and per-instance declarations collapsed so a pixel
+    // bar is edited once rather than cell by cell. The two must agree: a
+    // definition that compiles to a different footprint than the one patched
+    // would be an editor that silently rewrites fixtures.
+    FixtureDef def;
 };
 
 struct GdtfReport {

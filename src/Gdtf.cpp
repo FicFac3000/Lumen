@@ -228,6 +228,26 @@ bool looksLikeAnchor(const std::string& setName, float physFrom, float physTo) {
            n == "closed" || n == "none" || n == "index";
 }
 
+// Mutable walk over every GeometryReference in a tree. Needed because the
+// import has to fill in offsets the file left implicit.
+void walkRefs(std::vector<GeometryNode>& nodes,
+              const std::function<void(GeometryNode&)>& fn) {
+    for (GeometryNode& n : nodes) {
+        if (n.isReference()) fn(n);
+        walkRefs(n.children, fn);
+    }
+}
+
+const GeometryNode* findGeo(const std::vector<GeometryNode>& nodes,
+                            const std::string& name) {
+    for (const GeometryNode& n : nodes) {
+        if (n.name == name) return &n;
+        if (const GeometryNode* hit = findGeo(n.children, name)) return hit;
+    }
+    return nullptr;
+}
+
+
 } // namespace
 
 GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
@@ -252,6 +272,12 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
     rep.info.fixtureTypeId = ft->attrOr("FixtureTypeID");
     rep.info.description = ft->attrOr("Description");
 
+    rep.info.def.manufacturer = rep.info.manufacturer;
+    rep.info.def.name = rep.info.name;
+    rep.info.def.shortName = rep.info.shortName;
+    rep.info.def.typeId = rep.info.fixtureTypeId;
+    rep.info.def.description = rep.info.description;
+
     // Geometry references are what make a fixture multi-instance: each one is
     // an instance of a shared geometry, which becomes a Lumen cell (§1.3).
     std::vector<std::string> cellGeometries;
@@ -269,6 +295,39 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
             }
         };
         walk(*geos);
+
+        // The same tree again, this time as the editable model (§1.2). The
+        // flat channel list above is the compiled artifact; this is the source
+        // the editor's views read, so the hierarchy has to survive import.
+        std::function<std::vector<GeometryNode>(const XmlNode&)> build =
+            [&](const XmlNode& n) {
+                std::vector<GeometryNode> out;
+                for (const auto& c : n.children) {
+                    GeometryNode g;
+                    g.name = c.attrOr("Name");
+                    if (g.name.empty()) continue;
+
+                    if (c.name == "GeometryReference") {
+                        g.kind = GeometryKind::Reference;
+                        g.referenced = c.attrOr("Geometry");
+                        // GDTF's Break gives the instance's absolute start,
+                        // 1-based. Without one the offset is inferred from the
+                        // channels declared against this instance, below.
+                        if (const XmlNode* br = c.kid("Break"))
+                            g.dmxOffset = std::max(0, br->attrInt("DMXOffset", 1) - 1);
+                    } else if (c.name == "Axis") {
+                        g.kind = GeometryKind::Axis;
+                    } else if (c.name == "Beam") {
+                        g.kind = GeometryKind::Beam;
+                    } else {
+                        g.kind = GeometryKind::Normal;
+                    }
+                    g.children = build(c);
+                    out.push_back(std::move(g));
+                }
+                return out;
+            };
+        rep.info.def.geometries = build(*geos);
     }
 
     const XmlNode* modes = ft->descend("DMXModes");
@@ -293,6 +352,20 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
         }
 
         std::set<std::string> seenCellGeoms;
+
+        // Collected alongside the flat channel list, with GDTF's ABSOLUTE
+        // offsets, and turned into the editable mode after the loop — the
+        // model's offsets are relative to their instance, which cannot be
+        // worked out until every channel of that instance has been seen.
+        struct RawChannel {
+            Attr attr = Attr::Dimmer;
+            std::string geometry;
+            int coarse = 0;
+            int fine = -1;
+            uint8_t defaultValue = 0;
+            std::vector<ChannelSetDef> sets;
+        };
+        std::vector<RawChannel> raw;
 
         for (const XmlNode* ch : channels->kids("DMXChannel")) {
             const auto offsets = parseOffsets(ch->attrOr("Offset"));
@@ -342,6 +415,14 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
             gm.type.channels.push_back(def);
             ++rep.channels;
 
+            RawChannel rc;
+            rc.attr = *mapped;
+            rc.geometry = geometry;
+            rc.coarse = def.coarse;
+            rc.fine = def.fine;
+            rc.defaultValue = def.defaultValue;
+            raw.push_back(std::move(rc));
+
             // Channel sets become Lumen's range labels (§7.2), which is what
             // gives an imported profile working labels for free.
             if (!logical) continue;
@@ -363,6 +444,9 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
                     cs.physTo = static_cast<float>(pt);
                     cs.anchor = looksLikeAnchor(cs.name, cs.physFrom, cs.physTo);
                     gm.type.sets.push_back(cs);
+                    if (!raw.empty())
+                        raw.back().sets.push_back({cs.name, cs.dmxFrom, cs.dmxTo,
+                                                   cs.physFrom, cs.physTo, cs.anchor});
                     ++rep.channelSets;
                     continue;
                 }
@@ -389,6 +473,9 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
                     cs.physTo = static_cast<float>(set->attrDouble("PhysicalTo", pt));
                     cs.anchor = looksLikeAnchor(cs.name, cs.physFrom, cs.physTo);
                     gm.type.sets.push_back(cs);
+                    if (!raw.empty())
+                        raw.back().sets.push_back({cs.name, cs.dmxFrom, cs.dmxTo,
+                                                   cs.physFrom, cs.physTo, cs.anchor});
                     ++rep.channelSets;
                 }
             }
@@ -396,6 +483,75 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
 
         gm.type.cellCount = static_cast<CellId>(seenCellGeoms.size());
         rep.cells += static_cast<int>(seenCellGeoms.size());
+
+        // --- the editable mode (§1.2) --------------------------------------
+        {
+            ModeDef md;
+            md.name = gm.name;
+            md.rootGeometry = gm.geometry;
+
+            // A reference whose target is missing gets one synthesised, so a
+            // profile that omits the shared geometry still opens in the editor
+            // instead of refusing to compile. Flagged, not hidden.
+            std::vector<std::string> missing;
+            walkRefs(rep.info.def.geometries, [&](GeometryNode& r) {
+                if (r.referenced.empty()) return;
+                if (findGeo(rep.info.def.geometries, r.referenced)) return;
+                if (std::find(missing.begin(), missing.end(), r.referenced) ==
+                    missing.end())
+                    missing.push_back(r.referenced);
+            });
+            for (const std::string& name : missing) {
+                GeometryNode g;
+                g.name = name;
+                g.kind = GeometryKind::Beam;
+                rep.info.def.geometries.push_back(std::move(g));
+                rep.warnings.push_back("profile references geometry '" + name +
+                                       "' without defining it; a placeholder was "
+                                       "added so it can be edited");
+            }
+
+            // GDTF offsets are absolute within the mode; the model's are
+            // relative to the owning instance. Where a reference carried no
+            // Break, its base is the lowest offset declared against it.
+            std::map<std::string, int> base;
+            walkRefs(rep.info.def.geometries, [&](GeometryNode& r) {
+                if (r.dmxOffset > 0) {
+                    base[r.name] = r.dmxOffset;
+                    return;
+                }
+                int lowest = -1;
+                for (const RawChannel& rc : raw) {
+                    if (rc.geometry != r.name) continue;
+                    lowest = lowest < 0 ? rc.coarse : std::min(lowest, rc.coarse);
+                }
+                if (lowest > 0) r.dmxOffset = lowest;
+                base[r.name] = r.dmxOffset;
+            });
+
+            for (const RawChannel& rc : raw) {
+                ChannelDecl c;
+                c.attr = rc.attr;
+                c.geometry = rc.geometry;
+                const auto b = base.find(rc.geometry);
+                const int bias = b == base.end() ? 0 : b->second;
+                c.coarse = rc.coarse - bias;
+                c.fine = rc.fine < 0 ? -1 : rc.fine - bias;
+                c.defaultValue = rc.defaultValue;
+                c.sets = rc.sets;
+                md.channels.push_back(std::move(c));
+            }
+            rep.info.def.modes.push_back(std::move(md));
+
+            // Collapse the per-instance declarations GDTF writes out one by
+            // one, so a pixel bar is edited once rather than cell by cell.
+            const NormaliseReport nr =
+                normaliseInstances(rep.info.def, rep.info.def.modes.size() - 1);
+            for (const auto& [target, why] : nr.kept)
+                rep.warnings.push_back("cells of '" + target +
+                                       "' were not collapsed: " + why);
+        }
+
         rep.info.modes.push_back(std::move(gm));
     }
 
