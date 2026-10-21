@@ -22,6 +22,8 @@ add_library(lumen_core
   src/Command.cpp
   src/Builtins.cpp
   src/Show.cpp
+  src/Layout.cpp
+  src/Radial.cpp
   src/Output.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
@@ -74,5 +76,11 @@ target_link_libraries(test_show PRIVATE lumen_core SQLite::SQLite3)
 target_include_directories(test_show PRIVATE tests)
 target_compile_options(test_show PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME show COMMAND test_show)
+
+add_executable(test_ui tests/test_ui.cpp)
+target_link_libraries(test_ui PRIVATE lumen_core)
+target_include_directories(test_ui PRIVATE tests)
+target_compile_options(test_ui PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME ui COMMAND test_ui)
 
 

@@ -332,7 +332,11 @@ Result Console::execute(const std::string& line) {
 
     const std::string verb = tokens[i].text;
     const CommandDef* def = registry_.find(verb);
-    if (!def) return Result::bad("unknown command: " + verb);
+    if (!def) {
+        Result r = Result::bad("unknown command: " + verb);
+        r.parsed = false;
+        return r;
+    }
     ++i;
 
     // Privilege gate (§16.5). A reduced-privilege caller cannot reach a

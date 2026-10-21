@@ -47,7 +47,9 @@ inline int report(const char* suite) {
 
 } // namespace check
 
-#define CHECK(expr) ::check::record((expr), #expr, __FILE__, __LINE__)
+// Variadic so a braced initialiser inside the expression -- Cursor{0, 0} --
+// is not mistaken for a second macro argument.
+#define CHECK(...) ::check::record((__VA_ARGS__), #__VA_ARGS__, __FILE__, __LINE__)
 
 #define CHECK_EQ(a, b)                                                              \
     do {                                                                            \

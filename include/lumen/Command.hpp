@@ -68,13 +68,17 @@ struct Arg {
 
 struct Result {
     bool ok = true;
+    // True once dispatch found the command, whatever the handler then decided.
+    // "You typed nonsense" and "that will not work right now" are different
+    // answers and the UI needs to tell them apart.
+    bool parsed = false;
     std::string message;
     // Structured payload for introspection commands (§16.3), so a caller gets
     // data rather than having to scrape the message.
     std::vector<std::string> rows;
 
-    static Result good(std::string m = {}) { return Result{true, std::move(m), {}}; }
-    static Result bad(std::string m) { return Result{false, std::move(m), {}}; }
+    static Result good(std::string m = {}) { return Result{true, true, std::move(m), {}}; }
+    static Result bad(std::string m) { return Result{false, true, std::move(m), {}}; }
 };
 
 class CommandRegistry;
