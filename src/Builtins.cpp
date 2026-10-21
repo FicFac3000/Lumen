@@ -6,6 +6,7 @@
 #include "lumen/Command.hpp"
 #include "lumen/Gdtf.hpp"
 #include "lumen/Library.hpp"
+#include "lumen/Undo.hpp"
 #include "lumen/Mvr.hpp"
 #include "lumen/Show.hpp"
 
@@ -60,8 +61,13 @@ void Console::installBuiltins() {
             if (!v || !v->isNumber) return Result::bad("expected a value");
 
             auto& prog = ctx.engine.programmer;
+            const std::string what = std::string(attrName(attr)) + " at " +
+                                     std::to_string(static_cast<int>(v->number)) + "%";
+            ProgrammerEdit undo(ctx.engine, what);
             prog.selection().set(targets);
             prog.setAttr(attr, pct(v->number));
+            undo.commit(ctx.engine.history, ctx.engine);
+            ctx.engine.actionLog.add(what, "programmer", ctx.source, ctx.prompt);
             return Result::good(std::string(attrName(attr)) + " at " +
                                 std::to_string(static_cast<int>(v->number)) + "% on " +
                                 plural(targets.size(), "fixture", "fixtures"));
@@ -74,7 +80,11 @@ void Console::installBuiltins() {
         "Staged clear, resolved against programmer state: selection, then "
         "active values, then everything (SPEC 11.8).",
         [](Context& ctx) -> Result {
+            ProgrammerEdit undo(ctx.engine, "Clear");
             const ClearResult r = ctx.engine.programmer.clear();
+            if (undo.commit(ctx.engine.history, ctx.engine).valid())
+                ctx.engine.actionLog.add(std::string("Clear: ") + clearResultName(r),
+                                         "programmer", ctx.source, ctx.prompt);
             return Result::good(clearResultName(r));
         }});
 
@@ -83,7 +93,11 @@ void Console::installBuiltins() {
         Privilege::Operator, false, false,
         "Empties the programmer outright — hold Clear.",
         [](Context& ctx) -> Result {
-            return Result::good(clearResultName(ctx.engine.programmer.clearAll()));
+            ProgrammerEdit undo(ctx.engine, "Clear all");
+            const ClearResult r = ctx.engine.programmer.clearAll();
+            if (undo.commit(ctx.engine.history, ctx.engine).valid())
+                ctx.engine.actionLog.add("Clear all", "programmer", ctx.source, ctx.prompt);
+            return Result::good(clearResultName(r));
         }});
 
     registry_.add({
@@ -91,7 +105,11 @@ void Console::installBuiltins() {
         Privilege::Operator, false, false,
         "Removes preset-referenced values, leaving hard values — Shift+Clear.",
         [](Context& ctx) -> Result {
-            return Result::good(clearResultName(ctx.engine.programmer.clearPresets()));
+            ProgrammerEdit undo(ctx.engine, "Clear presets");
+            const ClearResult r = ctx.engine.programmer.clearPresets();
+            if (undo.commit(ctx.engine.history, ctx.engine).valid())
+                ctx.engine.actionLog.add("Clear presets", "programmer", ctx.source, ctx.prompt);
+            return Result::good(clearResultName(r));
         }});
 
     registry_.add({
@@ -99,7 +117,10 @@ void Console::installBuiltins() {
         Privilege::Operator, false, false,
         "Resolves preset references to literal values and keeps them.",
         [](Context& ctx) -> Result {
+            ProgrammerEdit undo(ctx.engine, "Flatten");
             ctx.engine.programmer.flatten();
+            if (undo.commit(ctx.engine.history, ctx.engine).valid())
+                ctx.engine.actionLog.add("Flatten", "programmer", ctx.source, ctx.prompt);
             return Result::good("flattened");
         }});
 
@@ -392,6 +413,12 @@ void Console::installBuiltins() {
             const int fp = ctx.engine.patch.type(ti).footprint();
             if (address <= 0) address = ctx.engine.patch.nextFreeAddress(universe, fp);
 
+            // One transaction over the whole range, so a bulk patch undoes as
+            // a unit rather than one fixture at a time (SPEC 8.6).
+            std::vector<FixtureId> ids;
+            for (const Target& t : expanded) ids.push_back(t.fixture);
+            PatchEdit undo(ctx.engine, "Patch " + typeName, ids);
+
             int made = 0;
             std::string err;
             for (const Target& t : expanded) {
@@ -405,6 +432,12 @@ void Console::installBuiltins() {
                 address += fp;
             }
             ctx.engine.syncUniverses();
+            if (made > 0) {
+                undo.commit(ctx.engine.history, ctx.engine);
+                ctx.engine.actionLog.add(
+                    "Patch " + std::to_string(made) + " x " + typeName, "patch",
+                    ctx.source, ctx.prompt);
+            }
             if (made == 0) return Result::bad(err.empty() ? "nothing patched" : err);
             return Result::good("patched " + plural(static_cast<size_t>(made),
                                                     "fixture", "fixtures") +
@@ -422,10 +455,21 @@ void Console::installBuiltins() {
                                      ? ctx.engine.programmer.selection().flatten()
                                      : ctx.targets;
             if (targets.empty()) return Result::bad("nothing selected");
+
+            std::vector<FixtureId> ids;
+            for (const Target& t : targets) ids.push_back(t.fixture);
+            PatchEdit undo(ctx.engine, "Unpatch", ids);
+
             int n = 0;
             for (const Target& t : targets)
                 if (ctx.engine.patch.remove(t.fixture)) ++n;
             ctx.engine.syncUniverses();
+            if (n > 0) {
+                undo.commit(ctx.engine.history, ctx.engine);
+                ctx.engine.actionLog.add(
+                    "Unpatch " + std::to_string(n) + " fixture(s)", "patch",
+                    ctx.source, ctx.prompt);
+            }
             return Result::good("unpatched " + plural(static_cast<size_t>(n),
                                                       "fixture", "fixtures"));
         }});
@@ -641,6 +685,83 @@ void Console::installBuiltins() {
             return r;
         }});
 
+    // ------------------------------------------------------------- undo (8.6)
+    registry_.add({
+        "Undo", {},
+        {{"scope", ParamType::Enum, false,
+          "programmer · patch · cue · preset · group · recipe · binding",
+          {"programmer", "patch", "cue", "preset", "group", "recipe", "binding"}}},
+        Privilege::Operator, false, false,
+        "Reverts the last edit. With a scope, reverts the last edit of that "
+        "kind — refused when a later edit touched the same objects, naming "
+        "what blocks it. Playback is never undone, so this is safe to press "
+        "during a show (SPEC 8.6).",
+        [](Context& ctx) -> Result {
+            const std::string scopeName = ctx.text(0);
+            UndoReport r;
+            if (scopeName.empty()) {
+                r = ctx.engine.history.undo(ctx.engine);
+            } else {
+                const auto scope = editScopeFromName(scopeName);
+                if (!scope) return Result::bad("unknown scope: " + scopeName);
+                r = ctx.engine.history.undoScoped(ctx.engine, *scope);
+            }
+            if (r.result == UndoReport::Result::Blocked)
+                return Result::bad("cannot undo '" + r.description +
+                                   "': a later action touched the same objects — " +
+                                   r.blockedBy);
+            if (!r.ok()) return Result::bad(r.description);
+            ctx.engine.actionLog.markUndone(r.description);
+            ctx.engine.syncUniverses();
+            return Result::good("undid " + r.description);
+        }});
+
+    registry_.add({
+        "Redo", {},
+        {{"scope", ParamType::Enum, false, "same scopes as Undo",
+          {"programmer", "patch", "cue", "preset", "group", "recipe", "binding"}}},
+        Privilege::Operator, false, false,
+        "Reapplies the last undone edit (SPEC 8.6).",
+        [](Context& ctx) -> Result {
+            const std::string scopeName = ctx.text(0);
+            UndoReport r;
+            if (scopeName.empty()) {
+                r = ctx.engine.history.redo(ctx.engine);
+            } else {
+                const auto scope = editScopeFromName(scopeName);
+                if (!scope) return Result::bad("unknown scope: " + scopeName);
+                r = ctx.engine.history.redoScoped(ctx.engine, *scope);
+            }
+            if (r.result == UndoReport::Result::Blocked)
+                return Result::bad("cannot redo '" + r.description + "': " +
+                                   r.blockedBy + " is in the way");
+            if (!r.ok()) return Result::bad(r.description);
+            ctx.engine.syncUniverses();
+            return Result::good("redid " + r.description);
+        }});
+
+    registry_.add({
+        "UndoThrough", {},
+        {{"id", ParamType::Int, true, "a history entry id, from `List history`"}},
+        Privilege::Protected, true, false,
+        "Undoes everything back through a chosen entry, as one operation "
+        "(SPEC 8.6's jump-to-point). Protected: it can revert a lot at once.",
+        [](Context& ctx) -> Result {
+            const int id = static_cast<int>(ctx.number(0, 0));
+            Uid target{};
+            for (const HistoryEntry& e : ctx.engine.history.entries())
+                if (e.id == id) target = e.uid;
+            if (!target.valid()) return Result::bad("no history entry " +
+                                                    std::to_string(id));
+            const UndoReport r = ctx.engine.history.undoThrough(ctx.engine, target);
+            if (!r.ok()) return Result::bad(r.description);
+            ctx.engine.syncUniverses();
+            return Result::good("undid " +
+                                plural(static_cast<size_t>(r.entriesAffected),
+                                       "entry", "entries") +
+                                ", back through " + r.description);
+        }});
+
     // ------------------------------------------------------------ learn (12)
     registry_.add({
         "Learn", {},
@@ -758,7 +879,8 @@ void Console::installBuiltins() {
         "List", {"ls"},
         {{"what", ParamType::Enum, true, "what to list",
           {"patch", "types", "sequences", "executors", "programmer", "selection",
-           "groups", "presets", "recipes", "library", "commands"}}},
+           "groups", "presets", "recipes", "library", "bindings", "history", "log",
+           "commands"}}},
         Privilege::Any, false, false,
         "Structured query over the show model. Paginated by the caller, never "
         "a whole-show dump (SPEC 16.3).",
@@ -850,6 +972,40 @@ void Console::installBuiltins() {
                           << (e.edited ? ", edited" : "") << "]";
                     else
                         o << "  [authored here]";
+                    r.rows.push_back(o.str());
+                }
+            } else if (what == "bindings") {
+                for (const auto& set : e.bindings.sets()) {
+                    for (const auto& b : set.bindings) {
+                        std::ostringstream o;
+                        o << set.name << (set.page ? " p" + std::to_string(set.page)
+                                                   : std::string())
+                          << "  " << b.source.describe() << " -> "
+                          << b.target.describe() << "  " << bindModeName(b.map.mode)
+                          << "/" << takeoverName(b.map.takeover)
+                          << (b.enabled ? "" : "  [off]");
+                        r.rows.push_back(o.str());
+                    }
+                }
+            } else if (what == "history") {
+                const int cursor = e.history.cursor();
+                int i = 0;
+                for (const auto& h : e.history.entries()) {
+                    std::ostringstream o;
+                    // The cursor marker is what makes a history view readable:
+                    // entries below it are applied, above it are undone.
+                    o << (i < cursor ? "  " : "~ ") << h.id << "  "
+                      << editScopeName(h.scope) << "  " << h.description << "  ["
+                      << h.source << "]";
+                    r.rows.push_back(o.str());
+                    ++i;
+                }
+            } else if (what == "log") {
+                for (const auto& l : e.actionLog.all()) {
+                    std::ostringstream o;
+                    o << l.scope << "  " << l.description << "  [" << l.source << "]"
+                      << (l.undone ? "  (undone)" : "");
+                    if (!l.prompt.empty()) o << "  prompt: " << l.prompt;
                     r.rows.push_back(o.str());
                 }
             } else if (what == "commands") {

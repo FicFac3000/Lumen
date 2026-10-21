@@ -32,6 +32,7 @@ struct SaveReport {
     int library = 0;
     int bindingSets = 0;
     int bindings = 0;
+    int actionLog = 0;
 };
 
 struct LoadReport {
@@ -49,6 +50,7 @@ struct LoadReport {
     int library = 0;
     int bindingSets = 0;
     int bindings = 0;
+    int actionLog = 0;
     // Things the file referenced that this build could not restore, rather
     // than failing the whole load. A show must open even if something in it
     // is unknown to this version.

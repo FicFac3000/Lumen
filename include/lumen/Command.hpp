@@ -96,6 +96,13 @@ struct Context {
     std::vector<Target> targets;  // from the selector clause, if any
     std::vector<Arg> args;
     Privilege granted = Privilege::Operator;
+    // Who is running this, for the action log (§8.6, §16.5): the operator, a
+    // macro, a plugin, or the agent. An agent batch has to be attributable
+    // after the fact or the audit record is worthless.
+    std::string source = "operator";
+    // The prompt behind an agent action, recorded alongside it so the audit
+    // trail and the conversation that caused it share one timeline (§16.5).
+    std::string prompt;
 
     const Arg* arg(size_t i) const { return i < args.size() ? &args[i] : nullptr; }
     double number(size_t i, double fallback = 0.0) const;
@@ -174,6 +181,15 @@ public:
     void setPrivilege(Privilege p) { granted_ = p; }
     Privilege privilege() const { return granted_; }
 
+    // What the action log attributes commands to. Defaults to "operator", or
+    // "agent" when running at the reduced privilege an agent gets.
+    void setSource(std::string s) { source_ = std::move(s); }
+    const std::string& source() const { return source_; }
+    // The prompt behind an agent batch, recorded with each action it causes
+    // so the two timelines line up (§16.5).
+    void setPrompt(std::string p) { prompt_ = std::move(p); }
+    const std::string& prompt() const { return prompt_; }
+
     const std::vector<std::string>& history() const { return history_; }
 
     // Learn lives here rather than on the engine: binding a target means
@@ -199,6 +215,8 @@ private:
     Engine& engine_;
     CommandRegistry registry_;
     Privilege granted_ = Privilege::Operator;
+    std::string source_;
+    std::string prompt_;
     std::vector<std::string> history_;
     Learn learn_{engine_.bindings};
 };

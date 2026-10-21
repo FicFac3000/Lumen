@@ -404,6 +404,14 @@ CREATE TABLE IF NOT EXISTS binding (
   rel_scale REAL NOT NULL, toggle_state INTEGER NOT NULL,
   FOREIGN KEY(set_uid) REFERENCES binding_set(uid) ON DELETE CASCADE);
 
+-- The action log (SPEC 8.6). Persisted, unlike the undo history: a reopened
+-- show should know what was done to it, but must not be rewindable past its
+-- saved state. An agent action carries the prompt that caused it (16.5).
+CREATE TABLE IF NOT EXISTS action_log (
+  uid INTEGER PRIMARY KEY, t REAL NOT NULL, description TEXT NOT NULL,
+  scope TEXT NOT NULL, source TEXT NOT NULL, prompt TEXT NOT NULL,
+  undone INTEGER NOT NULL, ord INTEGER NOT NULL);
+
 CREATE INDEX IF NOT EXISTS ix_cue_seq ON cue(seq_uid, idx);
 CREATE INDEX IF NOT EXISTS ix_lib_chan ON library_channel(library_uid, mode_ord, ord);
 CREATE INDEX IF NOT EXISTS ix_preset_pool ON preset(pool, pid);
@@ -1237,6 +1245,27 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
         }
     }
 
+    // --- action log (§8.6) ------------------------------------------------
+    {
+        Stmt al(db, "INSERT INTO action_log(uid,t,description,scope,source,prompt,"
+                    "undone,ord) VALUES(?,?,?,?,?,?,?,?)");
+        if (!al.valid()) return fail("prepare action log");
+        int ord = 0;
+        for (const LogEntry& l : eng.actionLog.all()) {
+            al.reset();
+            al.bindUid(1, l.uid)
+              .bind(2, l.time)
+              .bind(3, l.description)
+              .bind(4, l.scope)
+              .bind(5, l.source)
+              .bind(6, l.prompt)
+              .bind(7, l.undone ? 1 : 0)
+              .bind(8, ord++);
+            if (!al.run()) return fail("write action log");
+            ++rep.actionLog;
+        }
+    }
+
     if (!db.exec("COMMIT")) return fail("commit");
     db.close();
 
@@ -2000,7 +2029,34 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
         }
     }
 
+    // --- action log -------------------------------------------------------
+    ActionLog actionLog(eng.uids);
+    {
+        Stmt al(db, "SELECT uid,t,description,scope,source,prompt,undone FROM "
+                    "action_log ORDER BY ord");
+        if (al.valid()) {
+            while (al.step()) {
+                LogEntry l;
+                l.uid = al.uid(0);
+                l.time = al.dbl(1);
+                l.description = al.text(2);
+                l.scope = al.text(3);
+                l.source = al.text(4);
+                l.prompt = al.text(5);
+                l.undone = al.i32(6) != 0;
+                actionLog.restore(std::move(l));
+                ++rep.actionLog;
+            }
+        } else {
+            rep.warnings.push_back("file has no action log");
+        }
+    }
+
     // Everything read without error: now swap it in.
+    eng.actionLog = std::move(actionLog);
+    // The undo history is deliberately NOT restored (§8.6): a reopened show
+    // must not be rewindable past its saved state.
+    eng.history.clear();
     eng.bindings = std::move(bindings);
     eng.library = std::move(library);
     eng.groups = std::move(groups);

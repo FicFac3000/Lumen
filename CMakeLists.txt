@@ -33,6 +33,7 @@ add_library(lumen_core
   src/FixtureEditor.cpp
   src/Library.cpp
   src/Binding.cpp
+  src/Undo.cpp
   src/Mvr.cpp
   src/Output.cpp
 )
@@ -143,5 +144,11 @@ target_link_libraries(test_binding PRIVATE lumen_core SQLite::SQLite3)
 target_include_directories(test_binding PRIVATE tests)
 target_compile_options(test_binding PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME binding COMMAND test_binding)
+
+add_executable(test_undo tests/test_undo.cpp)
+target_link_libraries(test_undo PRIVATE lumen_core SQLite::SQLite3)
+target_include_directories(test_undo PRIVATE tests)
+target_compile_options(test_undo PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME undo COMMAND test_undo)
 
 

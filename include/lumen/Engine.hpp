@@ -12,6 +12,7 @@
 #include "lumen/Programmer.hpp"
 #include "lumen/Recipe.hpp"
 #include "lumen/TripleBuffer.hpp"
+#include "lumen/Undo.hpp"
 
 #include <array>
 #include <atomic>
@@ -128,6 +129,13 @@ public:
     // stall DMX.
     BindingStore bindings{uids};
     InputQueue inputs;
+
+    // Undo and the audit record (§8.6). Two separate things: the history is
+    // volatile and holds state deltas, the log is persisted and holds only
+    // descriptions. Playback is in neither, because Go and Release are
+    // performance rather than edits.
+    History history{uids};
+    ActionLog actionLog{uids};
 
     // What a drained input turned into, for the layer above to act on. The
     // engine resolves and maps; it does not dispatch, because a Command

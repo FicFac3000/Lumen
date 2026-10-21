@@ -1457,6 +1457,19 @@ Lumen refuses and says which action blocks it, offering to undo back through it
 instead. In practice programmer actions rarely collide with patch or playback
 edits, so the common case is unobstructed.
 
+`[done]` Built as specced, with two details the implementation settled:
+
+- An out-of-order undo **removes** its entry rather than leaving it behind the
+  cursor. The cursor cannot express "everything applied except this one", and
+  a redo of it would land on different state anyway. An in-order undo leaves
+  the entry redoable as usual.
+- Redo is guarded the same way in the other direction: redoing an older entry
+  out of order is refused when an undone entry between here and there touched
+  the same objects.
+- The programmer's touched set is the **fixtures** it wrote to, which is what
+  lets a patch edit elsewhere in the rig pass the collision check while an
+  unpatch of the same fixture correctly blocks it.
+
 **`[flag]` Playback actions are not undoable.** `Go`, `Off`, `Release`, fader
 moves and flashes are *performance*, not edits. If Undo could rewind a
 playback, it would change live output — so the undo system covers edits only.
@@ -1483,9 +1496,18 @@ bindings, surface layouts.
   them (§16.5), so the two systems share one timeline.
 - `[want]` Entries store deltas rather than whole-model snapshots, with a
   configurable depth cap — a bulk patch of 2000 fixtures must not blow memory.
-- Undo history does not survive save/load; the action log does. `[open]`
-  Confirm that is wanted — persisting undo across sessions is possible but
-  means a reopened show can be rewound past its saved state.
+- `[done]` Undo history does not survive save/load; the action log does. A
+  reopened show knows what was done to it but cannot be rewound past its saved
+  state, which is the behaviour an operator can reason about.
+- `[done]` An action is **marked** undone in the log rather than deleted: an
+  action that happened and was reverted is two facts, not zero.
+- `[done]` A command that changes nothing records nothing — an entry that
+  undoes nothing makes Undo look broken — and an aborted transaction reverts
+  what it already did, so a command that fails halfway leaves no trace.
+- `[done]` A bulk operation is ONE entry holding per-object deltas, so
+  patching eight fixtures undoes in one press and a 2000-fixture patch costs
+  2000 small records rather than 2000 copies of the patch. Depth and byte caps
+  evict oldest-first, but never below one entry.
 
 ---
 
@@ -3671,8 +3693,7 @@ Specced lightly or not at all, and worth a pass before M3:
   interaction
 - **Encoder detail** — acceleration curves, fine mode, snap to ChannelSet
   boundaries (§7.2)
-- **Undo model** — grouping and transactions were assumed by §16.5 but never
-  specified in their own right
+- *(Undo model now specced and built — §8.6)*
 
 ### 21.2 ChamSys `.hed` import — blocked
 
@@ -3726,6 +3747,7 @@ Engine and show model, with the command layer as the only mutation path:
 | ZIP writer | — | built |
 | Bindings, Learn, layering, takeover | §12 | built |
 | Input queue off the output thread | §12.7 | built |
+| Undo, redo, scoped undo, action log | §8.6 | built |
 
 Not started: rendering (§2 needs a display), bindings and I/O (§12, §18, §19),
 pixel and video (§13), laser (§14), session networking (§18.7), plugins and the

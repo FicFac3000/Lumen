@@ -377,7 +377,11 @@ Result Console::execute(const std::string& line) {
         return Result::bad(std::string("refused: ") + def->name + " requires " +
                            privilegeName(def->privilege) + " privilege");
 
-    Context ctx{engine_, registry_, this, targets, {}, granted_};
+    const std::string who =
+        !source_.empty() ? source_
+                         : (granted_ == Privilege::Any ? std::string("agent")
+                                                       : std::string("operator"));
+    Context ctx{engine_, registry_, this, targets, {}, granted_, who, prompt_};
     for (; tokens[i].kind != Token::Kind::End; ++i) {
         Arg a;
         a.raw = tokens[i].text;
