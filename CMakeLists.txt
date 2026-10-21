@@ -24,6 +24,7 @@ add_library(lumen_core
   src/Show.cpp
   src/Layout.cpp
   src/Radial.cpp
+  src/Preset.cpp
   src/Output.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
@@ -82,5 +83,11 @@ target_link_libraries(test_ui PRIVATE lumen_core)
 target_include_directories(test_ui PRIVATE tests)
 target_compile_options(test_ui PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME ui COMMAND test_ui)
+
+add_executable(test_preset tests/test_preset.cpp)
+target_link_libraries(test_preset PRIVATE lumen_core)
+target_include_directories(test_preset PRIVATE tests)
+target_compile_options(test_preset PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME preset COMMAND test_preset)
 
 
