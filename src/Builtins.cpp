@@ -5,6 +5,7 @@
 // model that bypasses this file.
 #include "lumen/Command.hpp"
 #include "lumen/Gdtf.hpp"
+#include "lumen/Library.hpp"
 #include "lumen/Mvr.hpp"
 #include "lumen/Show.hpp"
 
@@ -445,7 +446,7 @@ void Console::installBuiltins() {
             std::ostringstream o;
             o << s.fixtures << " fixtures, " << s.cues << " cues, " << s.values
               << " values, " << s.groups << " groups, " << s.presets << " presets, "
-              << s.recipes << " recipes";
+              << s.recipes << " recipes, " << s.library << " library fixtures";
             return Result::good(o.str());
         }});
 
@@ -476,32 +477,107 @@ void Console::installBuiltins() {
         {{"path", ParamType::String, true, "path to a .gdtf package"},
          {"mode", ParamType::String, false, "DMX mode name; all modes if omitted"}},
         Privilege::Operator, false, false,
-        "Imports a GDTF profile as fixture types. Unmapped source attributes "
-        "are reported rather than dropped (SPEC 6.3).",
+        "Imports a GDTF profile into the fixture library and publishes its "
+        "modes as patchable types. The package is kept verbatim, so exporting "
+        "it again returns the original file (SPEC 1.4).",
         [](Context& ctx) -> Result {
             const std::string path = ctx.text(0);
             if (path.empty()) return Result::bad("no path given");
-            GdtfReport g = loadGdtfFile(path);
-            if (!g.ok) return Result::bad("gdtf: " + g.error);
+
+            auto imp = ctx.engine.library.importFile(path);
+            if (!imp.ok) return Result::bad("gdtf: " + imp.error);
+
+            const LibraryEntry* e = ctx.engine.library.find(imp.uid);
+            if (!e) return Result::bad("import produced no library entry");
 
             const std::string want = ctx.text(1);
             int added = 0;
             Result r = Result::good();
-            for (const auto& mode : g.info.modes) {
-                if (!want.empty() && mode.name != want) continue;
-                ctx.engine.patch.addType(mode.type);
+            for (size_t i = 0; i < e->def.modes.size(); ++i) {
+                if (!want.empty() && e->def.modes[i].name != want) continue;
+                const auto pub = ctx.engine.library.publish(imp.uid, i, ctx.engine.patch);
+                if (!pub.ok) {
+                    r.rows.push_back("mode '" + e->def.modes[i].name +
+                                     "' did not compile: " + pub.error);
+                    continue;
+                }
                 ++added;
-                r.rows.push_back(mode.type.name + "  " +
-                                 std::to_string(mode.type.footprint()) + "ch");
+                r.rows.push_back(pub.typeName + "  " +
+                                 std::to_string(
+                                     ctx.engine.patch.type(pub.typeIndex).footprint()) +
+                                 "ch");
             }
             if (added == 0)
-                return Result::bad(want.empty() ? "profile has no modes"
+                return Result::bad(want.empty() ? "no mode in the profile compiled"
                                                 : "no mode named " + want);
-            for (const auto& u : g.unmapped)
-                r.rows.push_back("unmapped: " + u.gdtfAttribute + " (" + u.mode + ")");
-            for (const auto& w : g.warnings) r.rows.push_back("warning: " + w);
-            r.message = g.info.name + ": " + plural(static_cast<size_t>(added),
-                                                    "type", "types");
+            for (const auto& w : imp.warnings) r.rows.push_back("warning: " + w);
+            r.message = e->name + ": " + plural(static_cast<size_t>(added),
+                                                "type", "types") +
+                        ", package kept";
+            return r;
+        }});
+
+    registry_.add({
+        "ExportGdtf", {},
+        {{"fixture", ParamType::String, true, "a library fixture name"},
+         {"path", ParamType::String, true, "where to write the .gdtf package"}},
+        Privilege::Operator, false, false,
+        "Writes a library fixture back out as a .gdtf. An untouched profile "
+        "is copied byte for byte; an edited one is regenerated from Lumen's "
+        "model, and the reply says what regenerating cost (SPEC 1.4).",
+        [](Context& ctx) -> Result {
+            const std::string name = ctx.text(0);
+            const std::string path = ctx.text(1);
+            if (name.empty() || path.empty())
+                return Result::bad("needs a fixture name and a path");
+
+            const LibraryEntry* e = ctx.engine.library.byName(name);
+            if (!e) return Result::bad("no fixture in the library named " + name);
+
+            const LibraryExport x = ctx.engine.library.exportEntry(e->uid);
+            if (!x.ok) return Result::bad(x.error);
+
+            std::string err;
+            if (!ctx.engine.library.exportToFile(e->uid, path, &err))
+                return Result::bad("could not write: " + err);
+
+            Result r = Result::good();
+            for (const auto& d : x.dropped) r.rows.push_back("not written: " + d);
+            r.message = e->name + " -> " + path + " (" +
+                        (x.verbatim ? "the original package, unchanged"
+                                    : "regenerated from the model") +
+                        ", " + std::to_string(x.bytes.size()) + " bytes)";
+            return r;
+        }});
+
+    registry_.add({
+        "PublishFixture", {},
+        {{"fixture", ParamType::String, true, "a library fixture name"},
+         {"mode", ParamType::String, false, "DMX mode; the first if omitted"}},
+        Privilege::Operator, false, false,
+        "Compiles a library fixture's mode into a patchable type. This is the "
+        "step between editing a definition and patching it (SPEC 1.2).",
+        [](Context& ctx) -> Result {
+            const LibraryEntry* e = ctx.engine.library.byName(ctx.text(0));
+            if (!e) return Result::bad("no fixture in the library named " + ctx.text(0));
+
+            size_t mi = 0;
+            const std::string want = ctx.text(1);
+            if (!want.empty()) {
+                const int found = e->def.modeIndex(want);
+                if (found < 0) return Result::bad("no mode named " + want);
+                mi = static_cast<size_t>(found);
+            }
+
+            const auto pub = ctx.engine.library.publish(e->uid, mi, ctx.engine.patch);
+            if (!pub.ok) return Result::bad(pub.error);
+
+            Result r = Result::good();
+            for (const auto& w : pub.warnings) r.rows.push_back("warning: " + w);
+            r.message = pub.typeName + "  " +
+                        std::to_string(
+                            ctx.engine.patch.type(pub.typeIndex).footprint()) +
+                        "ch";
             return r;
         }});
 
@@ -535,12 +611,42 @@ void Console::installBuiltins() {
             return r;
         }});
 
+    registry_.add({
+        "ExportMvr", {},
+        {{"path", ParamType::String, true, "where to write the .mvr"},
+         {"layer", ParamType::String, false, "layer for untagged fixtures"}},
+        Privilege::Operator, false, false,
+        "Writes the patch out as an MVR: positions, addresses, layers from "
+        "tags, and the GDTF profiles the library kept (SPEC 17.5).",
+        [](Context& ctx) -> Result {
+            const std::string path = ctx.text(0);
+            if (path.empty()) return Result::bad("no path given");
+            const std::string layer = ctx.text(1, "Lumen");
+
+            MvrWriteReport w =
+                writeMvrFile(ctx.engine.patch, ctx.engine.library, path, layer);
+            if (!w.ok) return Result::bad("mvr: " + w.error);
+
+            Result r = Result::good();
+            for (const auto& g : w.regenerated)
+                r.rows.push_back("profile written from Lumen's model, not copied: " + g);
+            for (const auto& warn : w.warnings) r.rows.push_back("warning: " + warn);
+            std::ostringstream o;
+            o << w.fixtures << " fixtures, " << w.layers << " layer(s), "
+              << w.profiles << " profile(s)";
+            if (w.skipped) o << ", " << w.skipped << " skipped";
+            r.message = o.str();
+            // Writing an archive with no fixtures in it is not a success.
+            if (w.fixtures == 0) return Result::bad(o.str());
+            return r;
+        }});
+
     // -------------------------------------------------- introspection (16.3)
     registry_.add({
         "List", {"ls"},
         {{"what", ParamType::Enum, true, "what to list",
           {"patch", "types", "sequences", "executors", "programmer", "selection",
-           "groups", "presets", "recipes", "commands"}}},
+           "groups", "presets", "recipes", "library", "commands"}}},
         Privilege::Any, false, false,
         "Structured query over the show model. Paginated by the caller, never "
         "a whole-show dump (SPEC 16.3).",
@@ -620,6 +726,18 @@ void Console::installBuiltins() {
                 for (const auto& rc : e.recipes.all()) {
                     std::ostringstream o;
                     o << rc.name << "  " << rc.slots.size() << " slot(s)";
+                    r.rows.push_back(o.str());
+                }
+            } else if (what == "library") {
+                for (const auto& e : ctx.engine.library.all()) {
+                    std::ostringstream o;
+                    o << e.id << "  " << e.name << "  " << e.def.modes.size()
+                      << " mode(s)";
+                    if (e.hasOriginal())
+                        o << "  [" << e.sourceName << ", " << e.gdtf.size() << " bytes"
+                          << (e.edited ? ", edited" : "") << "]";
+                    else
+                        o << "  [authored here]";
                     r.rows.push_back(o.str());
                 }
             } else if (what == "commands") {

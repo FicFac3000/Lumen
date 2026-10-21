@@ -47,4 +47,41 @@ private:
 std::optional<std::vector<uint8_t>> inflateRaw(const uint8_t* src, size_t srcLen,
                                                size_t expectedOut);
 
+// Deflates to a raw stream. Returns nullopt only on a zlib failure, never on
+// incompressible input — the caller decides whether to store instead.
+std::optional<std::vector<uint8_t>> deflateRaw(const uint8_t* src, size_t srcLen,
+                                               int level = 6);
+
+// ---------------------------------------------------------------------------
+// Writer
+// ---------------------------------------------------------------------------
+// Enough to produce a .gdtf and a .mvr, which are both just ZIPs: stored and
+// deflated entries, no encryption, no spanning, no ZIP64. Entries are written
+// in the order they were added, because MVR readers in the wild expect
+// GeneralSceneDescription.xml first.
+class ZipWriter {
+public:
+    // An entry already compressed harder than deflate manages — an embedded
+    // .gdtf inside a .mvr, say — is stored rather than re-deflated, so
+    // `compress` is a request, not a promise.
+    void add(const std::string& name, std::vector<uint8_t> bytes, bool compress = true);
+    void addText(const std::string& name, const std::string& text, bool compress = true);
+
+    size_t entryCount() const { return pending_.size(); }
+    bool has(const std::string& name) const;
+
+    std::vector<uint8_t> bytes() const;
+    // Writes to a temp sibling and renames, so a failed write cannot destroy
+    // a file that was already there.
+    bool writeFile(const std::string& path, std::string* err = nullptr) const;
+
+private:
+    struct Pending {
+        std::string name;
+        std::vector<uint8_t> raw;
+        bool compress = true;
+    };
+    std::vector<Pending> pending_;
+};
+
 } // namespace lumen

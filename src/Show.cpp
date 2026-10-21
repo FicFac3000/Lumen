@@ -87,6 +87,14 @@ public:
     // cannot collapse into the same stored row.
     Stmt& bindNull(int i) { sqlite3_bind_null(st_, i); return *this; }
 
+    // A .gdtf package goes in as a blob. SQLITE_TRANSIENT, because the
+    // vector may be gone before the statement runs.
+    Stmt& bindBlob(int i, const std::vector<uint8_t>& v) {
+        if (v.empty()) sqlite3_bind_null(st_, i);
+        else sqlite3_bind_blob64(st_, i, v.data(), v.size(), SQLITE_TRANSIENT);
+        return *this;
+    }
+
     bool step() { return sqlite3_step(st_) == SQLITE_ROW; }
     bool run() {
         const int rc = sqlite3_step(st_);
@@ -110,6 +118,14 @@ public:
         return p ? reinterpret_cast<const char*>(p) : std::string{};
     }
     bool isNull(int c) const { return sqlite3_column_type(st_, c) == SQLITE_NULL; }
+
+    std::vector<uint8_t> blob(int c) const {
+        const void* p = sqlite3_column_blob(st_, c);
+        const int n = sqlite3_column_bytes(st_, c);
+        if (!p || n <= 0) return {};
+        const auto* b = static_cast<const uint8_t*>(p);
+        return std::vector<uint8_t>(b, b + n);
+    }
 
 private:
     Db* db_;
@@ -318,7 +334,57 @@ CREATE TABLE IF NOT EXISTS recipe_slot_gap_seq (
   slot_id INTEGER NOT NULL, ord INTEGER NOT NULL, length REAL NOT NULL,
   FOREIGN KEY(slot_id) REFERENCES recipe_slot(id) ON DELETE CASCADE);
 
+-- The fixture library. `package` is the original .gdtf, kept verbatim and
+-- EMBEDDED rather than referenced: a profile is tens of kilobytes, and a show
+-- that opens with its fixtures missing because a library folder moved is not a
+-- show (SPEC 1.4, 17.7). The parsed definition is stored alongside it, because
+-- the two are allowed to diverge — that is what `edited` means.
+CREATE TABLE IF NOT EXISTS library (
+  uid INTEGER PRIMARY KEY, lid INTEGER NOT NULL, name TEXT NOT NULL,
+  source TEXT NOT NULL, edited INTEGER NOT NULL,
+  manufacturer TEXT NOT NULL, fixture_name TEXT NOT NULL, short_name TEXT NOT NULL,
+  type_id TEXT NOT NULL, description TEXT NOT NULL,
+  package BLOB, ord INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS library_tag (
+  library_uid INTEGER NOT NULL, tag TEXT NOT NULL,
+  FOREIGN KEY(library_uid) REFERENCES library(uid) ON DELETE CASCADE);
+
+-- The geometry tree, flattened by parent NAME. Names are unique within a
+-- definition (validation rejects duplicates), and rows are written in
+-- pre-order so a parent always exists before its children.
+CREATE TABLE IF NOT EXISTS library_geometry (
+  library_uid INTEGER NOT NULL, ord INTEGER NOT NULL, parent TEXT NOT NULL,
+  name TEXT NOT NULL, kind INTEGER NOT NULL, referenced TEXT NOT NULL,
+  dmx_offset INTEGER NOT NULL,
+  FOREIGN KEY(library_uid) REFERENCES library(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS library_mode (
+  library_uid INTEGER NOT NULL, ord INTEGER NOT NULL, name TEXT NOT NULL,
+  root TEXT NOT NULL,
+  FOREIGN KEY(library_uid) REFERENCES library(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS library_channel (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_uid INTEGER NOT NULL, mode_ord INTEGER NOT NULL, ord INTEGER NOT NULL,
+  attr INTEGER NOT NULL, geometry TEXT NOT NULL,
+  coarse INTEGER NOT NULL, fine INTEGER NOT NULL,
+  default_value INTEGER NOT NULL, invert INTEGER NOT NULL,
+  FOREIGN KEY(library_uid) REFERENCES library(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS library_channel_set (
+  channel_id INTEGER NOT NULL, ord INTEGER NOT NULL, name TEXT NOT NULL,
+  dmx_from INTEGER NOT NULL, dmx_to INTEGER NOT NULL,
+  phys_from REAL NOT NULL, phys_to REAL NOT NULL, anchor INTEGER NOT NULL,
+  FOREIGN KEY(channel_id) REFERENCES library_channel(id) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS library_revision (
+  library_uid INTEGER NOT NULL, ord INTEGER NOT NULL, text TEXT NOT NULL,
+  date TEXT NOT NULL,
+  FOREIGN KEY(library_uid) REFERENCES library(uid) ON DELETE CASCADE);
+
 CREATE INDEX IF NOT EXISTS ix_cue_seq ON cue(seq_uid, idx);
+CREATE INDEX IF NOT EXISTS ix_lib_chan ON library_channel(library_uid, mode_ord, ord);
 CREATE INDEX IF NOT EXISTS ix_preset_pool ON preset(pool, pid);
 CREATE INDEX IF NOT EXISTS ix_slot_recipe ON recipe_slot(recipe_uid, ord);
 CREATE INDEX IF NOT EXISTS ix_val_cue ON cue_value(cue_uid);
@@ -959,6 +1025,127 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
         }
     }
 
+    // --- fixture library (§1.4) -------------------------------------------
+    {
+        Stmt lb(db, "INSERT INTO library(uid,lid,name,source,edited,manufacturer,"
+                    "fixture_name,short_name,type_id,description,package,ord) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)");
+        Stmt lt(db, "INSERT INTO library_tag(library_uid,tag) VALUES(?,?)");
+        Stmt lg(db, "INSERT INTO library_geometry(library_uid,ord,parent,name,kind,"
+                    "referenced,dmx_offset) VALUES(?,?,?,?,?,?,?)");
+        Stmt lm(db, "INSERT INTO library_mode(library_uid,ord,name,root) "
+                    "VALUES(?,?,?,?)");
+        Stmt lc(db, "INSERT INTO library_channel(library_uid,mode_ord,ord,attr,geometry,"
+                    "coarse,fine,default_value,invert) VALUES(?,?,?,?,?,?,?,?,?)");
+        Stmt ls(db, "INSERT INTO library_channel_set(channel_id,ord,name,dmx_from,"
+                    "dmx_to,phys_from,phys_to,anchor) VALUES(?,?,?,?,?,?,?,?)");
+        Stmt lr(db, "INSERT INTO library_revision(library_uid,ord,text,date) "
+                    "VALUES(?,?,?,?)");
+        if (!lb.valid() || !lt.valid() || !lg.valid() || !lm.valid() || !lc.valid() ||
+            !ls.valid() || !lr.valid())
+            return fail("prepare library");
+
+        int ord = 0;
+        for (const LibraryEntry& e : eng.library.all()) {
+            lb.reset();
+            lb.bindUid(1, e.uid)
+              .bind(2, e.id)
+              .bind(3, e.name)
+              .bind(4, e.sourceName)
+              .bind(5, e.edited ? 1 : 0)
+              .bind(6, e.def.manufacturer)
+              .bind(7, e.def.name)
+              .bind(8, e.def.shortName)
+              .bind(9, e.def.typeId)
+              .bind(10, e.def.description)
+              .bindBlob(11, e.gdtf)
+              .bind(12, ord++);
+            if (!lb.run()) return fail("write library entry");
+            ++rep.library;
+
+            for (const auto& tag : e.tags) {
+                lt.reset();
+                lt.bindUid(1, e.uid).bind(2, tag);
+                if (!lt.run()) return fail("write library tag");
+            }
+
+            // Pre-order, so a parent is always written before its children.
+            int gi = 0;
+            bool geoFailed = false;
+            std::function<void(const std::vector<GeometryNode>&, const std::string&)>
+                emit = [&](const std::vector<GeometryNode>& nodes,
+                           const std::string& parent) {
+                    for (const GeometryNode& n : nodes) {
+                        if (geoFailed) return;
+                        lg.reset();
+                        lg.bindUid(1, e.uid)
+                          .bind(2, gi++)
+                          .bind(3, parent)
+                          .bind(4, n.name)
+                          .bind(5, static_cast<int>(n.kind))
+                          .bind(6, n.referenced)
+                          .bind(7, n.dmxOffset);
+                        if (!lg.run()) {
+                            geoFailed = true;
+                            return;
+                        }
+                        emit(n.children, n.name);
+                    }
+                };
+            emit(e.def.geometries, std::string());
+            if (geoFailed) return fail("write library geometry");
+
+            for (size_t mi = 0; mi < e.def.modes.size(); ++mi) {
+                const ModeDef& m = e.def.modes[mi];
+                lm.reset();
+                lm.bindUid(1, e.uid)
+                  .bind(2, static_cast<int>(mi))
+                  .bind(3, m.name)
+                  .bind(4, m.rootGeometry);
+                if (!lm.run()) return fail("write library mode");
+
+                for (size_t ci = 0; ci < m.channels.size(); ++ci) {
+                    const ChannelDecl& c = m.channels[ci];
+                    lc.reset();
+                    lc.bindUid(1, e.uid)
+                      .bind(2, static_cast<int>(mi))
+                      .bind(3, static_cast<int>(ci))
+                      .bind(4, static_cast<int>(c.attr))
+                      .bind(5, c.geometry)
+                      .bind(6, c.coarse)
+                      .bind(7, c.fine)
+                      .bind(8, static_cast<int>(c.defaultValue))
+                      .bind(9, c.invert ? 1 : 0);
+                    if (!lc.run()) return fail("write library channel");
+                    const int64_t chanId = sqlite3_last_insert_rowid(db.raw());
+
+                    for (size_t si = 0; si < c.sets.size(); ++si) {
+                        const ChannelSetDef& st = c.sets[si];
+                        ls.reset();
+                        ls.bind(1, chanId)
+                          .bind(2, static_cast<int>(si))
+                          .bind(3, st.name)
+                          .bind(4, static_cast<int>(st.dmxFrom))
+                          .bind(5, static_cast<int>(st.dmxTo))
+                          .bind(6, static_cast<double>(st.physFrom))
+                          .bind(7, static_cast<double>(st.physTo))
+                          .bind(8, st.anchor ? 1 : 0);
+                        if (!ls.run()) return fail("write library channel set");
+                    }
+                }
+            }
+
+            for (size_t ri = 0; ri < e.def.revisions.size(); ++ri) {
+                lr.reset();
+                lr.bindUid(1, e.uid)
+                  .bind(2, static_cast<int>(ri))
+                  .bind(3, e.def.revisions[ri].text)
+                  .bind(4, e.def.revisions[ri].date);
+                if (!lr.run()) return fail("write library revision");
+            }
+        }
+    }
+
     if (!db.exec("COMMIT")) return fail("commit");
     db.close();
 
@@ -1543,7 +1730,119 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
         }
     }
 
+    // --- fixture library --------------------------------------------------
+    FixtureLibrary library(eng.uids);
+    {
+        Stmt lb(db, "SELECT uid,lid,name,source,edited,manufacturer,fixture_name,"
+                    "short_name,type_id,description,package FROM library ORDER BY ord");
+        if (lb.valid()) {
+            while (lb.step()) {
+                LibraryEntry e;
+                e.uid = lb.uid(0);
+                e.id = lb.i32(1);
+                e.name = lb.text(2);
+                e.sourceName = lb.text(3);
+                e.edited = lb.i32(4) != 0;
+                e.def.uid = e.uid;
+                e.def.manufacturer = lb.text(5);
+                e.def.name = lb.text(6);
+                e.def.shortName = lb.text(7);
+                e.def.typeId = lb.text(8);
+                e.def.description = lb.text(9);
+                e.gdtf = lb.blob(10);
+                eng.uids.observe(e.uid);
+
+                // Geometries come back in pre-order, so attaching each to its
+                // parent by name finds a parent that already exists.
+                Stmt lg(db, "SELECT parent,name,kind,referenced,dmx_offset FROM "
+                            "library_geometry WHERE library_uid=? ORDER BY ord");
+                lg.bindUid(1, e.uid);
+                while (lg.step()) {
+                    GeometryNode n;
+                    const std::string parent = lg.text(0);
+                    n.name = lg.text(1);
+                    n.kind = static_cast<GeometryKind>(lg.i32(2));
+                    n.referenced = lg.text(3);
+                    n.dmxOffset = lg.i32(4);
+                    if (parent.empty()) {
+                        e.def.geometries.push_back(std::move(n));
+                        continue;
+                    }
+                    GeometryNode* p = e.def.findGeometry(parent);
+                    if (p) p->children.push_back(std::move(n));
+                    else {
+                        // A parent the file lost: keep the node rather than
+                        // drop a geometry, and say so.
+                        rep.warnings.push_back("geometry '" + n.name + "' in '" +
+                                               e.name + "' lost its parent '" + parent +
+                                               "'; attached at the top");
+                        e.def.geometries.push_back(std::move(n));
+                    }
+                }
+
+                Stmt lm(db, "SELECT ord,name,root FROM library_mode WHERE library_uid=? "
+                            "ORDER BY ord");
+                lm.bindUid(1, e.uid);
+                while (lm.step()) {
+                    ModeDef m;
+                    const int mi = lm.i32(0);
+                    m.name = lm.text(1);
+                    m.rootGeometry = lm.text(2);
+
+                    Stmt lc(db, "SELECT id,attr,geometry,coarse,fine,default_value,"
+                                "invert FROM library_channel WHERE library_uid=? AND "
+                                "mode_ord=? ORDER BY ord");
+                    lc.bindUid(1, e.uid).bind(2, mi);
+                    while (lc.step()) {
+                        ChannelDecl c;
+                        const int64_t chanId = lc.i64(0);
+                        c.attr = static_cast<Attr>(lc.i32(1));
+                        c.geometry = lc.text(2);
+                        c.coarse = lc.i32(3);
+                        c.fine = lc.i32(4);
+                        c.defaultValue = static_cast<uint8_t>(lc.i32(5));
+                        c.invert = lc.i32(6) != 0;
+
+                        Stmt ls(db, "SELECT name,dmx_from,dmx_to,phys_from,phys_to,"
+                                    "anchor FROM library_channel_set WHERE channel_id=? "
+                                    "ORDER BY ord");
+                        ls.bind(1, chanId);
+                        while (ls.step()) {
+                            ChannelSetDef st;
+                            st.name = ls.text(0);
+                            st.dmxFrom = static_cast<uint8_t>(ls.i32(1));
+                            st.dmxTo = static_cast<uint8_t>(ls.i32(2));
+                            st.physFrom = static_cast<float>(ls.dbl(3));
+                            st.physTo = static_cast<float>(ls.dbl(4));
+                            st.anchor = ls.i32(5) != 0;
+                            c.sets.push_back(std::move(st));
+                        }
+                        m.channels.push_back(std::move(c));
+                    }
+                    e.def.modes.push_back(std::move(m));
+                }
+
+                Stmt lr(db, "SELECT text,date FROM library_revision WHERE library_uid=? "
+                            "ORDER BY ord");
+                lr.bindUid(1, e.uid);
+                while (lr.step())
+                    e.def.revisions.push_back({lr.text(0), lr.text(1)});
+
+                Stmt lt(db, "SELECT tag FROM library_tag WHERE library_uid=? "
+                            "ORDER BY rowid");
+                lt.bindUid(1, e.uid);
+                while (lt.step()) e.tags.push_back(lt.text(0));
+
+                library.restore(std::move(e));
+                ++rep.library;
+            }
+        } else {
+            rep.warnings.push_back("file has no fixture library");
+        }
+    }
+
     // Everything read without error: now swap it in.
+    eng.library = std::move(library);
     eng.groups = std::move(groups);
     eng.presets = std::move(presets);
     eng.recipes = std::move(recipes);

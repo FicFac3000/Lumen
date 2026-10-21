@@ -6,11 +6,13 @@
 #include "lumen/Mvr.hpp"
 #include "lumen/Patch.hpp"
 #include "lumen/Uid.hpp"
+#include "lumen/Zip.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <set>
 
 using namespace lumen;
 namespace fs = std::filesystem;
@@ -556,6 +558,260 @@ static void testGdtfImportCommand() {
     CHECK_EQ(eng2.patch.size(), size_t(4));
 }
 
+// ---------------------------------------------------------------------------
+// Export (§17.5)
+// ---------------------------------------------------------------------------
+static void testPlotRoundTripsBackOut() {
+    if (!haveZip()) return;
+    const std::string pkg = tmpDir() + "/plot.mvr";
+    if (!fs::exists(pkg) && !makeMvrPackage(pkg)) return;
+
+    // Import the plot, keeping the profiles in the library — which is what
+    // makes an export faithful rather than a reconstruction.
+    Engine a;
+    MvrReport m = loadMvrFile(pkg);
+    CHECK(m.ok);
+
+    ZipReader zip;
+    std::string err;
+    CHECK(zip.openFile(pkg, &err));
+    std::vector<uint8_t> originalProfile;
+    for (const auto& [spec, info] : m.profiles) {
+        const auto bytes = zip.read(spec, &err);
+        CHECK(bytes.has_value());
+        if (!bytes) continue;
+        originalProfile = *bytes;
+        CHECK(a.library.importPackage(*bytes, spec).ok);
+    }
+    CHECK(!originalProfile.empty());
+
+    MvrApplyReport ap = applyMvr(a.patch, &a.groups, m);
+    CHECK_EQ(ap.patched, 3);
+
+    // Give one fixture a real orientation, so the matrix is not just identity.
+    CHECK(a.patch.setPosition(11, 1.5f, -2.f, 6.f, -30.f, 15.f, 45.f));
+
+    const std::string out = tmpDir() + "/exported.mvr";
+    fs::remove(out);
+    MvrWriteReport w = writeMvrFile(a.patch, a.library, out);
+    CHECK(w.ok);
+    CHECK(w.error.empty());
+    CHECK_EQ(w.fixtures, 3);
+    CHECK_EQ(w.skipped, 0);
+    CHECK_EQ(w.layers, 2);
+    CHECK_EQ(w.profiles, 1);
+    CHECK(w.regenerated.empty());   // nothing was edited, so nothing was rebuilt
+    CHECK(fs::exists(out));
+
+    // The embedded profile is the designer's own file, byte for byte.
+    ZipReader back;
+    CHECK(back.openFile(out, &err));
+    CHECK(back.has("GeneralSceneDescription.xml"));
+    CHECK(back.has("TestSpot.gdtf"));
+    const auto embedded = back.read("TestSpot.gdtf", &err);
+    CHECK(embedded.has_value());
+    CHECK(embedded.value_or(std::vector<uint8_t>()) == originalProfile);
+
+    // And the whole thing re-imports into an identical patch.
+    MvrReport again = loadMvrFile(out);
+    CHECK(again.ok);
+    CHECK_EQ(again.fixtures.size(), size_t(3));
+    CHECK_EQ(again.layers.size(), size_t(2));
+    CHECK_EQ(again.profiles.size(), size_t(1));
+    CHECK(again.warnings.empty());
+
+    Engine b;
+    MvrApplyReport ap2 = applyMvr(b.patch, &b.groups, again);
+    CHECK_EQ(ap2.patched, 3);
+    CHECK_EQ(ap2.skipped, 0);
+    CHECK_EQ(ap2.groupsCreated, 2);
+    CHECK_EQ(b.patch.size(), a.patch.size());
+
+    for (const Fixture& f : a.patch.fixtures()) {
+        const Fixture* g = b.patch.find(f.id);
+        CHECK(g != nullptr);
+        if (!g) continue;
+        CHECK(g->name == f.name);
+        CHECK_EQ(g->universe, f.universe);
+        CHECK_EQ(g->address, f.address);
+        CHECK_NEAR(g->x, f.x);
+        CHECK_NEAR(g->y, f.y);
+        CHECK_NEAR(g->z, f.z);
+        // The mode came back too, so the footprint matches rather than
+        // defaulting to the profile's first mode.
+        CHECK_EQ(b.patch.type(g->typeIndex).footprint(),
+                 a.patch.type(f.typeIndex).footprint());
+    }
+
+    // Layers survived as groups, which is where the tags came from.
+    CHECK(b.groups.byName("Front Truss") != nullptr);
+    CHECK(b.groups.byName("Floor") != nullptr);
+
+    // Rotation survived the matrix. 180 degrees comes back as -180 — the same
+    // orientation written the other way round — so this checks the general
+    // case rather than that one.
+    const Fixture* rotated = b.patch.find(11);
+    CHECK(rotated != nullptr);
+    if (rotated) {
+        CHECK_NEAR(rotated->rotX, -30.f);
+        CHECK_NEAR(rotated->rotY, 15.f);
+        CHECK_NEAR(rotated->rotZ, 45.f);
+    }
+}
+
+static void testExportSkipsWhatItCannotDescribe() {
+    // A fixture patched from a type with no library profile behind it cannot
+    // be written: a dangling GDTFSpec makes the whole archive unusable, so it
+    // is skipped and named instead.
+    Engine eng;
+    installStarterTypes(eng.patch);
+    Patch::PatchRequest req;
+    req.id = 1;
+    req.name = "Orphan";
+    req.typeIndex = eng.patch.findType("LED Par RGBW");
+    CHECK(eng.patch.add(req));
+
+    MvrWriteReport rep;
+    const std::string xml = writeMvrXml(eng.patch, eng.library, "Lumen", &rep);
+    CHECK(rep.ok);
+    CHECK_EQ(rep.fixtures, 0);
+    CHECK_EQ(rep.skipped, 1);
+    CHECK(!rep.warnings.empty());
+    CHECK(rep.warnings[0].find("no profile in the library") != std::string::npos);
+    CHECK(xml.find("Orphan") == std::string::npos);
+
+    // With the profile in the library, the same fixture writes fine.
+    LibraryEntry& e = eng.library.addAuthored(starterMovingSpot());
+    const auto pub = eng.library.publish(e.uid, 0, eng.patch);
+    CHECK(pub.ok);
+    Patch::PatchRequest req2;
+    req2.id = 2;
+    req2.name = "Known";
+    req2.typeIndex = pub.typeIndex;
+    req2.address = 100;
+    CHECK(eng.patch.add(req2));
+
+    MvrWriteReport rep2;
+    const std::string xml2 = writeMvrXml(eng.patch, eng.library, "Lumen", &rep2);
+    CHECK_EQ(rep2.fixtures, 1);
+    CHECK_EQ(rep2.skipped, 1);   // the orphan, still
+    CHECK(xml2.find("Known") != std::string::npos);
+    CHECK(xml2.find("<GDTFMode>Standard</GDTFMode>") != std::string::npos);
+
+    // An authored profile has no original, so the export says it was written
+    // from the model rather than copied.
+    const std::string out = tmpDir() + "/authored.mvr";
+    fs::remove(out);
+    MvrWriteReport rep3 = writeMvrFile(eng.patch, eng.library, out);
+    CHECK(rep3.ok);
+    CHECK_EQ(rep3.profiles, 1);
+    CHECK_EQ(rep3.regenerated.size(), size_t(1));
+
+    // It still re-imports, which is the test that matters.
+    MvrReport back = loadMvrFile(out);
+    CHECK(back.ok);
+    CHECK_EQ(back.fixtures.size(), size_t(1));
+    CHECK_EQ(back.profiles.size(), size_t(1));
+    Engine b;
+    CHECK_EQ(applyMvr(b.patch, nullptr, back).patched, 1);
+    const Fixture* k = b.patch.find(2);
+    CHECK(k != nullptr);
+    if (k) {
+        CHECK(k->name == "Known");
+        CHECK_EQ(k->address, 100);
+        CHECK_EQ(b.patch.type(k->typeIndex).footprint(), 8);
+    }
+}
+
+static void testExportThroughTheConsole() {
+    Engine eng;
+    Console con(eng);
+    LibraryEntry& e = eng.library.addAuthored(starterMovingSpot());
+    const auto pub = eng.library.publish(e.uid, 0, eng.patch);
+    CHECK(pub.ok);
+    CHECK(con.execute("Fixture 1 Thru 4 Patch \"Moving Spot / Standard\"").ok);
+
+    const std::string out = tmpDir() + "/console.mvr";
+    fs::remove(out);
+    Result r = con.execute("ExportMvr \"" + out + "\"");
+    CHECK(r.parsed);
+    CHECK(r.ok);
+    CHECK(fs::exists(out));
+    CHECK(r.message.find("4 fixtures") != std::string::npos);
+
+    MvrReport back = loadMvrFile(out);
+    CHECK(back.ok);
+    CHECK_EQ(back.fixtures.size(), size_t(4));
+
+    // Nothing patched is a failed export, not a quiet success: an archive with
+    // no fixtures in it is not a plot.
+    Engine blank;
+    Console con2(blank);
+    Result bad = con2.execute("ExportMvr \"" + tmpDir() + "/blank.mvr\"");
+    CHECK(bad.parsed);
+    CHECK(!bad.ok);
+
+    CHECK(!con.execute("ExportMvr \"\"").ok);
+}
+
+static void testExportDetails() {
+    Engine eng;
+    LibraryEntry& e = eng.library.addAuthored(starterMovingSpot());
+    const auto pub = eng.library.publish(e.uid, 0, eng.patch);
+    CHECK(pub.ok);
+
+    // Three fixtures across two layers, by tag, plus one untagged.
+    for (FixtureId id = 1; id <= 3; ++id) {
+        Patch::PatchRequest r;
+        r.id = id;
+        r.name = "F" + std::to_string(id);
+        r.typeIndex = pub.typeIndex;
+        r.universe = 2;
+        r.address = 1 + static_cast<int>(id - 1) * 8;
+        CHECK(eng.patch.add(r));
+    }
+    CHECK(eng.patch.addTag(1, "Truss"));
+    CHECK(eng.patch.addTag(2, "Truss"));
+
+    MvrWriteReport rep;
+    const std::string xml = writeMvrXml(eng.patch, eng.library, "Floor", &rep);
+    CHECK_EQ(rep.fixtures, 3);
+    CHECK_EQ(rep.layers, 2);
+    CHECK(xml.find("name=\"Truss\"") != std::string::npos);
+    CHECK(xml.find("name=\"Floor\"") != std::string::npos);
+
+    // Addresses go out ABSOLUTE: universe 2 channel 1 is 513.
+    CHECK(xml.find("<Address break=\"0\">513</Address>") != std::string::npos);
+    CHECK(xml.find("<Address break=\"0\">521</Address>") != std::string::npos);
+
+    // Reading it back puts them in the right universe again.
+    MvrReport back = parseMvrXml(xml);
+    CHECK(back.ok);
+    CHECK_EQ(back.fixtures.size(), size_t(3));
+    for (const MvrFixture& f : back.fixtures) CHECK_EQ(f.universe, 2);
+
+    // UUIDs are derived from the fixture UID, not drawn at random, so a
+    // second export of the same show gives the same UUIDs and a plot updates
+    // instead of filling with duplicates.
+    const std::string again = writeMvrXml(eng.patch, eng.library, "Floor", nullptr);
+    CHECK(again == xml);
+    MvrReport parsed = parseMvrXml(xml);
+    std::set<std::string> uuids;
+    for (const MvrFixture& f : parsed.fixtures) {
+        CHECK(!f.uuid.empty());
+        CHECK_EQ(f.uuid.size(), size_t(36));
+        CHECK(uuids.insert(f.uuid).second);   // distinct per fixture
+    }
+
+    // An empty patch is a valid, empty scene rather than an error.
+    Engine blank;
+    MvrWriteReport br;
+    const std::string bx = writeMvrXml(blank.patch, blank.library, "Lumen", &br);
+    CHECK(br.ok);
+    CHECK_EQ(br.fixtures, 0);
+    CHECK(parseMvrXml(bx).ok);
+}
+
 int main() {
     std::printf("lumen mvr\n");
     testMatrixParsing();
@@ -568,5 +824,9 @@ int main() {
     testMissingAndBrokenPackages();
     testImportThroughTheConsole();
     testGdtfImportCommand();
+    testPlotRoundTripsBackOut();
+    testExportSkipsWhatItCannotDescribe();
+    testExportThroughTheConsole();
+    testExportDetails();
     return check::report("mvr");
 }

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <map>
+#include <cstdio>
 #include <functional>
 
 namespace lumen {
@@ -376,6 +378,239 @@ MvrApplyReport applyMvr(Patch& patch, GroupStore* groups, const MvrReport& mvr) 
             groups->add(std::move(g));
             ++rep.groupsCreated;
         }
+    }
+    return rep;
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+namespace {
+
+std::string esc(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+
+// A UUID derived from the fixture's own UID rather than drawn at random, so
+// re-exporting a show gives the same UUIDs and a plot updates instead of
+// filling up with duplicates.
+std::string uuidFrom(Uid uid, uint32_t salt) {
+    uint64_t a = uid.v ? uid.v : 0x9e3779b97f4a7c15ull;
+    uint64_t b = a ^ (static_cast<uint64_t>(salt) * 0x9e3779b97f4a7c15ull);
+    // A couple of splitmix rounds, enough to spread a small counter across the
+    // whole field.
+    auto mix = [](uint64_t x) {
+        x += 0x9e3779b97f4a7c15ull;
+        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+        x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+        return x ^ (x >> 31);
+    };
+    a = mix(a);
+    b = mix(b);
+
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%08x-%04x-%04x-%04x-%012llx",
+                  static_cast<unsigned>(a >> 32),
+                  static_cast<unsigned>((a >> 16) & 0xffff),
+                  static_cast<unsigned>(a & 0xffff),
+                  static_cast<unsigned>((b >> 48) & 0xffff),
+                  static_cast<unsigned long long>(b & 0xffffffffffffull));
+    return buf;
+}
+
+// Enough digits that a rotation survives the trip. At four decimals a
+// 45-degree angle came back 0.002 degrees out — harmless on a plot, but free
+// to avoid, and a test that has to be loosened to pass is a test that has
+// stopped checking the thing.
+std::string fmt(float v) {
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%.7g", static_cast<double>(v));
+    return buf;
+}
+
+// The inverse of eulerFromMatrix: R = Rz * Ry * Rx, columns written out.
+std::string matrixFor(const Fixture& f) {
+    const float d2r = 0.017453292519943295f;
+    const float cx = std::cos(f.rotX * d2r), sx = std::sin(f.rotX * d2r);
+    const float cy = std::cos(f.rotY * d2r), sy = std::sin(f.rotY * d2r);
+    const float cz = std::cos(f.rotZ * d2r), sz = std::sin(f.rotZ * d2r);
+
+    float m[3][3];
+    m[0][0] = cz * cy;
+    m[0][1] = cz * sy * sx - sz * cx;
+    m[0][2] = cz * sy * cx + sz * sx;
+    m[1][0] = sz * cy;
+    m[1][1] = sz * sy * sx + cz * cx;
+    m[1][2] = sz * sy * cx - cz * sx;
+    m[2][0] = -sy;
+    m[2][1] = cy * sx;
+    m[2][2] = cy * cx;
+
+    // Columns, and the translation back in MILLIMETRES.
+    std::string out;
+    for (int c = 0; c < 3; ++c)
+        out += "{" + fmt(m[0][c]) + "," + fmt(m[1][c]) + "," + fmt(m[2][c]) + "}";
+    out += "{" + fmt(f.x * 1000.f) + "," + fmt(f.y * 1000.f) + "," +
+           fmt(f.z * 1000.f) + "}";
+    return out;
+}
+
+// Which library entry and mode produced a patched type. The link is the type
+// NAME, which is the same contract compile() and the importer already use.
+struct ProfileRef {
+    const LibraryEntry* entry = nullptr;
+    size_t mode = 0;
+    std::string spec;   // the .gdtf filename inside the archive
+};
+
+} // namespace
+
+std::string writeMvrXml(const Patch& patch, const FixtureLibrary& library,
+                        const std::string& defaultLayer, MvrWriteReport* out) {
+    MvrWriteReport rep;
+
+    // Resolve each patched type to a library profile once.
+    std::map<std::string, ProfileRef> byTypeName;
+    for (const LibraryEntry& e : library.all())
+        for (size_t mi = 0; mi < e.def.modes.size(); ++mi) {
+            ProfileRef pr;
+            pr.entry = &e;
+            pr.mode = mi;
+            pr.spec = e.sourceName.empty() ? (e.name + ".gdtf") : e.sourceName;
+            byTypeName.emplace(e.def.typeName(mi), pr);
+        }
+
+    // Layers come from tags, in the order the patch first mentions them, so an
+    // imported plot's layer order survives the round trip.
+    std::vector<std::string> layers;
+    std::map<std::string, std::vector<const Fixture*>> byLayer;
+    for (const Fixture& f : patch.fixtures()) {
+        std::string layer = defaultLayer;
+        for (const std::string& t : f.tags) {
+            // The first tag that names a layer wins. A tag is a layer unless
+            // it is one Lumen added itself.
+            if (t == "mvr") continue;
+            layer = t;
+            break;
+        }
+        if (std::find(layers.begin(), layers.end(), layer) == layers.end())
+            layers.push_back(layer);
+        byLayer[layer].push_back(&f);
+    }
+    rep.layers = static_cast<int>(layers.size());
+
+    std::string x;
+    x += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    x += "<GeneralSceneDescription verMajor=\"1\" verMinor=\"5\">\n";
+    x += " <Scene>\n  <Layers>\n";
+
+    uint32_t salt = 1;
+    for (const std::string& layer : layers) {
+        x += "   <Layer name=\"" + esc(layer) + "\" uuid=\"" +
+             uuidFrom(Uid{static_cast<uint64_t>(std::hash<std::string>{}(layer))},
+                      0) +
+             "\">\n    <ChildList>\n";
+
+        for (const Fixture* f : byLayer[layer]) {
+            const FixtureType* t = patch.typeOf(f->id);
+            if (!t) {
+                rep.warnings.push_back("fixture " + std::to_string(f->id) +
+                                       " has no type; skipped");
+                ++rep.skipped;
+                continue;
+            }
+            auto pr = byTypeName.find(t->name);
+            if (pr == byTypeName.end()) {
+                // Patched from a type with no library profile behind it — a
+                // starter type, or one imported before the library existed.
+                // Skipped rather than written with a dangling GDTFSpec, which
+                // would make the whole archive unusable.
+                rep.warnings.push_back("fixture " + std::to_string(f->id) + " ('" +
+                                       t->name + "') has no profile in the library; "
+                                       "skipped");
+                ++rep.skipped;
+                continue;
+            }
+
+            const int absolute = (f->universe - 1) * 512 + f->address;
+            x += "     <Fixture name=\"" + esc(f->name.empty()
+                                                   ? "Fixture " + std::to_string(f->id)
+                                                   : f->name) +
+                 "\" uuid=\"" + uuidFrom(f->uid, salt++) + "\">\n";
+            x += "      <GDTFSpec>" + esc(pr->second.spec) + "</GDTFSpec>\n";
+            x += "      <GDTFMode>" +
+                 esc(pr->second.entry->def.modes[pr->second.mode].name) +
+                 "</GDTFMode>\n";
+            x += "      <Matrix>" + matrixFor(*f) + "</Matrix>\n";
+            x += "      <Addresses><Address break=\"0\">" + std::to_string(absolute) +
+                 "</Address></Addresses>\n";
+            x += "      <FixtureID>" + std::to_string(f->id) + "</FixtureID>\n";
+            x += "      <UnitNumber>" + std::to_string(f->id) + "</UnitNumber>\n";
+            x += "     </Fixture>\n";
+            ++rep.fixtures;
+        }
+        x += "    </ChildList>\n   </Layer>\n";
+    }
+
+    x += "  </Layers>\n </Scene>\n</GeneralSceneDescription>\n";
+    rep.ok = true;
+    if (out) *out = rep;
+    return x;
+}
+
+MvrWriteReport writeMvrFile(const Patch& patch, const FixtureLibrary& library,
+                            const std::string& path, const std::string& defaultLayer) {
+    MvrWriteReport rep;
+    const std::string xml = writeMvrXml(patch, library, defaultLayer, &rep);
+    if (!rep.ok) return rep;
+
+    ZipWriter zip;
+    // First in the archive, because readers in the wild look for it there.
+    zip.addText("GeneralSceneDescription.xml", xml);
+
+    // Embed only the profiles the scene actually references, each one the
+    // package the library kept.
+    std::vector<std::string> wanted;
+    for (const Fixture& f : patch.fixtures()) {
+        const FixtureType* t = patch.typeOf(f.id);
+        if (!t) continue;
+        for (const LibraryEntry& e : library.all())
+            for (size_t mi = 0; mi < e.def.modes.size(); ++mi) {
+                if (e.def.typeName(mi) != t->name) continue;
+                const std::string spec =
+                    e.sourceName.empty() ? (e.name + ".gdtf") : e.sourceName;
+                if (std::find(wanted.begin(), wanted.end(), spec) != wanted.end())
+                    continue;
+                wanted.push_back(spec);
+
+                const LibraryExport x = library.exportEntry(e.uid);
+                if (!x.ok) {
+                    rep.warnings.push_back("could not write profile '" + spec +
+                                           "': " + x.error);
+                    continue;
+                }
+                // Already a ZIP, so storing it beats re-deflating it.
+                zip.add(spec, x.bytes, false);
+                ++rep.profiles;
+                if (!x.verbatim) rep.regenerated.push_back(spec);
+            }
+    }
+
+    std::string err;
+    if (!zip.writeFile(path, &err)) {
+        rep.ok = false;
+        rep.error = err;
     }
     return rep;
 }

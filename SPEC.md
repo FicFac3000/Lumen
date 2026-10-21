@@ -94,6 +94,30 @@ patch.
 
 ### 1.4 GDTF builder
 
+#### 1.4.1 Decision: GDTF is the fixture file format, and an import keeps its bytes
+
+`[done]` Fixture files stay GDTF, in and out. There is no private Lumen fixture
+format, and an imported `.gdtf` package is **kept verbatim** rather than
+replaced by anything Lumen regenerates.
+
+The reason is coverage. Lumen's model holds geometries, modes, channels and
+channel sets. A real package also carries 3D models, wheels and slots,
+emitters, filters, colour spaces, physical descriptions, DMX profiles and
+revision history. Regenerating a package from the model would silently discard
+all of it — so the original travels with the show and an export returns it
+unchanged, byte for byte.
+
+- A profile is only written from the model when it was **authored in Lumen**,
+  or **edited** here. Then the export says what regenerating cost, naming each
+  category it could not write, rather than shipping a thinner profile quietly.
+- The package is **embedded in the show file**, unlike media (§17.7). A profile
+  is tens of kilobytes, and a show that opens with its fixtures missing because
+  a library folder moved is not a show.
+- MVR export embeds these kept packages, so a plot that leaves Lumen carries the
+  designer's own profiles rather than Lumen's reading of them.
+- The parsed model and the package are both stored, because they are allowed to
+  diverge: that divergence is exactly what "edited" means.
+
 - `[want]` Built-in GDTF fixture builder — create a fixture from scratch,
   not just edit imported ones.
 - Scope: geometry tree authoring, DMX mode authoring, channel functions and
@@ -3558,11 +3582,13 @@ Outcome: usable on a real rig.
   views are data, not pixels, until §2 renders)
 - ChamSys `.hed` import from the user's own install (§1.1) — **blocked**, see
   §21.2
-- GDTF builder (§1.4) — authoring model done; writing a `.gdtf` package back
-  out is next, and MVR export depends on it
-- MVR export (§17.5) — blocked on GDTF export, since an MVR embeds profiles
-- Fixture library: a store of definitions on the engine, persisted in the show
-  and reachable from the command layer
+- GDTF export (§1.4) — **built**: writes a valid `.gdtf`, used only for
+  fixtures authored or edited here (see §1.4.1)
+- MVR export (§17.5) — **built**: positions, layers from tags, and the kept
+  profiles embedded
+- Fixture library (§1.4.1) — **built**: definitions plus their original
+  packages, persisted in the show and reachable from the command layer
+- GDTF builder UI: geometry and wheel authoring, schema validation (§1.4)
 
 ### M5 — Bindings and I/O
 
@@ -3667,6 +3693,9 @@ Engine and show model, with the command layer as the only mutation path:
 | GDTF import, attribute mapping | §1.1, §6.3 | built |
 | MVR import | §17.5 | built |
 | Fixture editor: geometry tree, table and tree views | §1.2, §1.3 | built |
+| Fixture library, packages kept verbatim | §1.4.1 | built |
+| GDTF export, MVR export | §1.4, §17.5 | built |
+| ZIP writer | — | built |
 
 Not started: rendering (§2 needs a display), bindings and I/O (§12, §18, §19),
 pixel and video (§13), laser (§14), session networking (§18.7), plugins and the

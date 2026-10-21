@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <functional>
 #include <set>
 
 namespace lumen {
@@ -130,8 +131,36 @@ std::optional<Attr> AttributeMap::map(const std::string& gdtfName) const {
     return std::nullopt;
 }
 
-void AttributeMap::set(const std::string& gdtfName, Attr a) { map_[gdtfName] = a; }
-void AttributeMap::remove(const std::string& gdtfName) { map_.erase(gdtfName); }
+void AttributeMap::set(const std::string& gdtfName, Attr a) {
+    map_[gdtfName] = a;
+    // First name wins, so the canonical spelling listed before the aliases is
+    // the one an export writes back out.
+    canonical_.emplace(a, gdtfName);
+}
+
+void AttributeMap::remove(const std::string& gdtfName) {
+    auto it = map_.find(gdtfName);
+    if (it == map_.end()) return;
+    const Attr a = it->second;
+    map_.erase(it);
+
+    // If that was the canonical spelling, promote whatever else still maps
+    // here rather than leaving the attribute unwritable.
+    auto c = canonical_.find(a);
+    if (c == canonical_.end() || c->second != gdtfName) return;
+    canonical_.erase(c);
+    for (const auto& [name, mapped] : map_)
+        if (mapped == a) {
+            canonical_.emplace(a, name);
+            break;
+        }
+}
+
+std::optional<std::string> AttributeMap::nameFor(Attr a) const {
+    auto it = canonical_.find(a);
+    if (it == canonical_.end()) return std::nullopt;
+    return it->second;
+}
 
 std::optional<Attr> AttributeMap::mapWithIndex(const std::string& gdtfName) const {
     if (auto direct = map(gdtfName)) return direct;
@@ -432,11 +461,25 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
                 const auto sets = cf->kids("ChannelSet");
 
                 if (sets.empty()) {
-                    // A function with no sets is itself a named range.
+                    // A function with no sets is itself a named range — but
+                    // only when its name says something. Nearly every profile
+                    // has one plain ChannelFunction per channel named after
+                    // the attribute and spanning the whole range; treating
+                    // those as labels gives a "Dimmer 0-255" range on every
+                    // channel in the rig, which is noise in the preset
+                    // generator and in the encoder's range-jumping.
+                    const std::string fnName = cf->attrOr("Name");
+                    const bool spansAll =
+                        std::lround(parseGdtfDmx(cf->attrOr("DMXFrom", "0/1")) * 255.f) == 0;
+                    if (spansAll &&
+                        (fnName.empty() || fnName == gdtfAttr ||
+                         fnName == attrName(*mapped)))
+                        continue;
+
                     ChannelSet cs;
                     cs.attr = *mapped;
                     cs.cell = cell;
-                    cs.name = cf->attrOr("Name");
+                    cs.name = fnName;
                     cs.dmxFrom = static_cast<uint8_t>(
                         std::lround(parseGdtfDmx(cf->attrOr("DMXFrom", "0/1")) * 255.f));
                     cs.dmxTo = 255;
@@ -490,17 +533,23 @@ GdtfReport parseGdtfXml(const std::string& xml, const AttributeMap& attrMap) {
             md.name = gm.name;
             md.rootGeometry = gm.geometry;
 
-            // A reference whose target is missing gets one synthesised, so a
-            // profile that omits the shared geometry still opens in the editor
-            // instead of refusing to compile. Flagged, not hidden.
+            // A geometry the file names but never defines gets one
+            // synthesised, so a profile that omits its <Geometries> section —
+            // or just one node of it — still opens in the editor instead of
+            // refusing to compile. Flagged, not hidden.
             std::vector<std::string> missing;
-            walkRefs(rep.info.def.geometries, [&](GeometryNode& r) {
-                if (r.referenced.empty()) return;
-                if (findGeo(rep.info.def.geometries, r.referenced)) return;
-                if (std::find(missing.begin(), missing.end(), r.referenced) ==
-                    missing.end())
-                    missing.push_back(r.referenced);
-            });
+            auto want = [&](const std::string& name) {
+                if (name.empty()) return;
+                if (findGeo(rep.info.def.geometries, name)) return;
+                if (std::find(missing.begin(), missing.end(), name) == missing.end())
+                    missing.push_back(name);
+            };
+            walkRefs(rep.info.def.geometries,
+                     [&](GeometryNode& r) { want(r.referenced); });
+            // Channels name geometries too, and plenty of profiles in the wild
+            // carry no geometry tree at all.
+            for (const RawChannel& rc : raw) want(rc.geometry);
+            want(gm.geometry);
             for (const std::string& name : missing) {
                 GeometryNode g;
                 g.name = name;
@@ -577,6 +626,240 @@ GdtfReport loadGdtfFile(const std::string& path, const AttributeMap& attrMap) {
         return rep;
     }
     return parseGdtfXml(*xml, attrMap);
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+namespace {
+
+std::string xmlEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+
+std::string attrPair(const std::string& k, const std::string& v) {
+    return " " + k + "=\"" + xmlEscape(v) + "\"";
+}
+
+// GDTF writes a DMX value as "value/byteCount".
+std::string gdtfDmx(int value, int bytes) {
+    return std::to_string(value) + "/" + std::to_string(bytes);
+}
+
+std::string indent(int depth) { return std::string(static_cast<size_t>(depth) * 2, ' '); }
+
+const char* geometryTag(GeometryKind k) {
+    switch (k) {
+        case GeometryKind::Axis: return "Axis";
+        case GeometryKind::Beam: return "Beam";
+        case GeometryKind::Reference: return "GeometryReference";
+        case GeometryKind::Normal: break;
+    }
+    return "Geometry";
+}
+
+} // namespace
+
+std::string gdtfNameFor(Attr a) {
+    static const AttributeMap map;
+    if (auto name = map.nameFor(a)) return *name;
+    // Nothing in the table: fall back to Lumen's own name, which at least
+    // round-trips through Lumen even if another console will not know it.
+    return attrName(a);
+}
+
+GdtfWriteReport writeGdtfXml(const FixtureDef& def) {
+    GdtfWriteReport rep;
+
+    // §1.4 asks for schema validation. The model cannot express most of a
+    // real package, so rather than pretend, the writer names what it is not
+    // emitting. These are facts about this writer, not about `def`.
+    rep.dropped.push_back("3D models and their files");
+    rep.dropped.push_back("wheels and wheel slots");
+    rep.dropped.push_back("emitters, filters and colour spaces");
+    rep.dropped.push_back("physical descriptions (beam angle, lumens, power)");
+    rep.dropped.push_back("DMX profiles and macros");
+    // GDTF stores only each range's START; the end is the next range's start
+    // minus one, and the last range runs to the top. A range that stopped
+    // short of the top cannot be expressed, so say so rather than let it come
+    // back wider than it went out.
+    for (const ModeDef& m : def.modes)
+        for (const ChannelDecl& c : m.channels) {
+            if (c.sets.empty()) continue;
+            if (c.sets.back().dmxTo >= 255) continue;
+            rep.dropped.push_back("the upper bound of '" + c.sets.back().name +
+                                  "' on " + attrName(c.attr) +
+                                  ": GDTF's last range always runs to 255");
+        }
+
+    std::string x;
+    x += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    x += "<GDTF DataVersion=\"1.2\">\n";
+    x += " <FixtureType" + attrPair("Name", def.name) +
+         attrPair("ShortName", def.shortName.empty() ? def.name : def.shortName) +
+         attrPair("LongName", def.name) +
+         attrPair("Manufacturer", def.manufacturer);
+    if (!def.typeId.empty()) x += attrPair("FixtureTypeID", def.typeId);
+    if (!def.description.empty()) x += attrPair("Description", def.description);
+    x += ">\n";
+
+    // Attribute definitions: every attribute any mode uses, once.
+    {
+        std::vector<std::string> names;
+        for (const ModeDef& m : def.modes)
+            for (const ChannelDecl& c : m.channels) {
+                const std::string n = gdtfNameFor(c.attr);
+                if (std::find(names.begin(), names.end(), n) == names.end())
+                    names.push_back(n);
+            }
+        x += "  <AttributeDefinitions>\n   <Attributes>\n";
+        for (const std::string& n : names)
+            x += "    <Attribute" + attrPair("Name", n) + attrPair("Pretty", n) + "/>\n";
+        x += "   </Attributes>\n  </AttributeDefinitions>\n";
+    }
+
+    // Geometries, with references carrying the Break that places each
+    // instance — which is what makes the offsets readable by anything else.
+    {
+        std::function<void(const std::vector<GeometryNode>&, int)> emit =
+            [&](const std::vector<GeometryNode>& nodes, int depth) {
+                for (const GeometryNode& n : nodes) {
+                    const char* tag = geometryTag(n.kind);
+                    x += indent(depth) + "<" + tag + attrPair("Name", n.name);
+                    if (n.isReference()) x += attrPair("Geometry", n.referenced);
+                    if (n.children.empty() && !n.isReference()) {
+                        x += "/>\n";
+                        continue;
+                    }
+                    x += ">\n";
+                    if (n.isReference()) {
+                        // GDTF's DMXOffset is the 1-based absolute start.
+                        x += indent(depth + 1) + "<Break" +
+                             attrPair("DMXBreak", "1") +
+                             attrPair("DMXOffset", std::to_string(n.dmxOffset + 1)) +
+                             "/>\n";
+                    }
+                    emit(n.children, depth + 1);
+                    x += indent(depth) + "</" + tag + ">\n";
+                }
+            };
+        x += "  <Geometries>\n";
+        emit(def.geometries, 3);
+        x += "  </Geometries>\n";
+    }
+
+    // Modes. Offsets go back to ABSOLUTE here, which is what GDTF stores, so
+    // each instanced declaration is written once per instance — the shape the
+    // importer then normalises back.
+    x += "  <DMXModes>\n";
+    for (size_t mi = 0; mi < def.modes.size(); ++mi) {
+        const ModeDef& m = def.modes[mi];
+        x += "   <DMXMode" + attrPair("Name", m.name) +
+             attrPair("Geometry",
+                      m.rootGeometry.empty()
+                          ? (def.geometries.empty() ? std::string("Base")
+                                                    : def.geometries.front().name)
+                          : m.rootGeometry) +
+             ">\n    <DMXChannels>\n";
+
+        for (const ChannelDecl& c : m.channels) {
+            for (const GeometryInstance& in : instancesOf(def, c.geometry)) {
+                const std::string gdtfAttr = gdtfNameFor(c.attr);
+                const int coarse = c.coarse + in.dmxOffset + 1;  // 1-based
+                std::string offset = std::to_string(coarse);
+                int byteCount = 1;
+                if (c.fine >= 0) {
+                    offset += "," + std::to_string(c.fine + in.dmxOffset + 1);
+                    byteCount = 2;
+                }
+
+                const std::string geom =
+                    in.instanceName.empty()
+                        ? (m.rootGeometry.empty() ? std::string() : m.rootGeometry)
+                        : in.instanceName;
+
+                x += "     <DMXChannel" + attrPair("DMXBreak", "1") +
+                     attrPair("Offset", offset);
+                if (!geom.empty()) x += attrPair("Geometry", geom);
+                x += ">\n";
+                x += "      <LogicalChannel" + attrPair("Attribute", gdtfAttr) + ">\n";
+                x += "       <ChannelFunction" + attrPair("Name", gdtfAttr) +
+                     attrPair("Attribute", gdtfAttr) +
+                     attrPair("Default",
+                              gdtfDmx(byteCount == 2
+                                          ? static_cast<int>(c.defaultValue) * 257
+                                          : static_cast<int>(c.defaultValue),
+                                      byteCount));
+                if (c.sets.empty()) {
+                    x += "/>\n";
+                } else {
+                    x += ">\n";
+                    for (const ChannelSetDef& s : c.sets) {
+                        x += "        <ChannelSet" + attrPair("Name", s.name) +
+                             attrPair("DMXFrom", gdtfDmx(s.dmxFrom, 1)) +
+                             attrPair("PhysicalFrom", std::to_string(s.physFrom)) +
+                             attrPair("PhysicalTo", std::to_string(s.physTo)) + "/>\n";
+                    }
+                    x += "       </ChannelFunction>\n";
+                }
+                x += "      </LogicalChannel>\n     </DMXChannel>\n";
+            }
+        }
+        x += "    </DMXChannels>\n   </DMXMode>\n";
+    }
+    x += "  </DMXModes>\n";
+
+    // Revisions, which is the one piece of history the model does carry.
+    if (!def.revisions.empty()) {
+        x += "  <Revisions>\n";
+        for (const auto& r : def.revisions)
+            x += "   <Revision" + attrPair("Text", r.text) +
+                 attrPair("Date", r.date) + "/>\n";
+        x += "  </Revisions>\n";
+    }
+
+    x += " </FixtureType>\n</GDTF>\n";
+    rep.xml = std::move(x);
+    rep.ok = !def.modes.empty();
+    return rep;
+}
+
+GdtfPackage writeGdtfPackage(const FixtureDef& def) {
+    GdtfPackage pkg;
+    const GdtfWriteReport w = writeGdtfXml(def);
+    pkg.dropped = w.dropped;
+    if (!w.ok) {
+        pkg.error = "a fixture needs at least one DMX mode to export";
+        return pkg;
+    }
+    ZipWriter zip;
+    zip.addText("description.xml", w.xml);
+    pkg.bytes = zip.bytes();
+    pkg.ok = true;
+    return pkg;
+}
+
+bool writeGdtfFile(const FixtureDef& def, const std::string& path, std::string* err) {
+    const GdtfWriteReport w = writeGdtfXml(def);
+    if (!w.ok) {
+        if (err) *err = "a fixture needs at least one DMX mode to export";
+        return false;
+    }
+    ZipWriter zip;
+    zip.addText("description.xml", w.xml);
+    return zip.writeFile(path, err);
 }
 
 } // namespace lumen

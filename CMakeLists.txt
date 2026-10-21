@@ -31,6 +31,7 @@ add_library(lumen_core
   src/Zip.cpp
   src/Gdtf.cpp
   src/FixtureEditor.cpp
+  src/Library.cpp
   src/Mvr.cpp
   src/Output.cpp
 )
@@ -129,5 +130,11 @@ target_link_libraries(test_editor PRIVATE lumen_core)
 target_include_directories(test_editor PRIVATE tests)
 target_compile_options(test_editor PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME editor COMMAND test_editor)
+
+add_executable(test_library tests/test_library.cpp)
+target_link_libraries(test_library PRIVATE lumen_core SQLite::SQLite3)
+target_include_directories(test_library PRIVATE tests)
+target_compile_options(test_library PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME library COMMAND test_library)
 
 

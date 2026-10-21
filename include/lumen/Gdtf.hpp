@@ -39,8 +39,15 @@ public:
     // exists, so Gobo3 does not need its own table entry to be recognised.
     std::optional<Attr> mapWithIndex(const std::string& gdtfName) const;
 
+    // The reverse direction, for export. Several GDTF names map to one Lumen
+    // attribute (ColorAdd_R and Red both mean red), so the FIRST name
+    // registered for an attribute is its canonical spelling — the table lists
+    // the canonical names before the aliases.
+    std::optional<std::string> nameFor(Attr a) const;
+
 private:
     std::map<std::string, Attr> map_;
+    std::map<Attr, std::string> canonical_;
 };
 
 // ---------------------------------------------------------------------------
@@ -99,5 +106,45 @@ GdtfReport loadGdtfFile(const std::string& path, const AttributeMap& map = Attri
 // A GDTF DMX value is written "value/byteCount", e.g. "32768/2". Returns the
 // value normalised to 0..1 so it can be stored as a default.
 float parseGdtfDmx(const std::string& text);
+
+// ---------------------------------------------------------------------------
+// Export (§1.4)
+// ---------------------------------------------------------------------------
+// GDTF is the fixture file format, in and out: a fixture authored or edited in
+// Lumen leaves as a valid .gdtf package rather than a private format, so it
+// opens in MA3, ChamSys, Capture and a plot drawn in Vectorworks.
+//
+// WRITING IS THE FALLBACK, NOT THE DEFAULT. A profile that came in as a .gdtf
+// keeps its original bytes (see Library.hpp) and is re-emitted unchanged,
+// because this writer only knows what the model knows: geometries, modes,
+// channels, channel sets. A real package also carries 3D models, wheels and
+// slots, emitters and filters, physical descriptions and revision history.
+// Regenerating one of those from the model would quietly throw all of it away,
+// so the library only regenerates a profile the user actually edited, and says
+// what it dropped.
+struct GdtfWriteReport {
+    bool ok = false;
+    std::string xml;
+    // What the model could not express, named rather than silently lost.
+    std::vector<std::string> dropped;
+};
+
+GdtfWriteReport writeGdtfXml(const FixtureDef& def);
+
+// The whole package: description.xml inside a ZIP, which is all a .gdtf is.
+struct GdtfPackage {
+    bool ok = false;
+    std::vector<uint8_t> bytes;
+    std::vector<std::string> dropped;
+    std::string error;
+};
+
+GdtfPackage writeGdtfPackage(const FixtureDef& def);
+bool writeGdtfFile(const FixtureDef& def, const std::string& path,
+                   std::string* err = nullptr);
+
+// The GDTF attribute name a Lumen attribute writes as. The import mapping run
+// backwards, so a round trip keeps its attributes.
+std::string gdtfNameFor(Attr a);
 
 } // namespace lumen

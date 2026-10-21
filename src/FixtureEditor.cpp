@@ -176,7 +176,12 @@ CompileReport compile(const FixtureDef& def, size_t modeIndex) {
     }
     const ModeDef& mode = def.modes[modeIndex];
 
-    rep.type.uid = def.uid;
+    // NO uid here. One definition compiles to one type PER MODE, so copying
+    // the definition's uid onto each of them gives every mode of a fixture the
+    // same identity — which collides in the patch's by-uid index and in the
+    // show file. Patch::addType mints one, and its name-based dedup ("Spot /
+    // Basic" vs "Spot / Extended") is what keeps a re-publish replacing the
+    // same type rather than adding another.
     rep.type.name = def.typeName(modeIndex);
 
     CellId maxCell = 0;

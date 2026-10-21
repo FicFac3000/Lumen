@@ -12,6 +12,7 @@
 
 #include "lumen/Gdtf.hpp"
 #include "lumen/Group.hpp"
+#include "lumen/Library.hpp"
 #include "lumen/Patch.hpp"
 
 #include <map>
@@ -69,6 +70,41 @@ struct MvrApplyReport {
 };
 
 MvrApplyReport applyMvr(Patch& patch, GroupStore* groups, const MvrReport& mvr);
+
+// ---------------------------------------------------------------------------
+// Export (§17.5)
+// ---------------------------------------------------------------------------
+// The plot goes back out, so Lumen's patch round-trips into Vectorworks,
+// Depence or Capture rather than being a one-way destination.
+//
+// The profiles come from the fixture library, which kept the .gdtf packages it
+// imported (Library.hpp). That is what makes an export faithful: the embedded
+// profiles are the ones the designer sent, not a reconstruction of them. A
+// fixture authored in Lumen has no original, so its profile is written from
+// the model and the report says so.
+struct MvrWriteReport {
+    bool ok = false;
+    std::string error;
+    int fixtures = 0;
+    int skipped = 0;
+    int layers = 0;
+    int profiles = 0;
+    // Profiles written from Lumen's model rather than copied, named so the
+    // designer knows which ones to check in the plot.
+    std::vector<std::string> regenerated;
+    std::vector<std::string> warnings;
+};
+
+// Layers come from fixture tags: a fixture tagged "Front Truss" lands on that
+// layer, which is how an imported MVR's layers survive a round trip. Anything
+// untagged goes on `defaultLayer`.
+MvrWriteReport writeMvrFile(const Patch& patch, const FixtureLibrary& library,
+                            const std::string& path,
+                            const std::string& defaultLayer = "Lumen");
+
+// The scene description on its own, for a caller that wants the XML.
+std::string writeMvrXml(const Patch& patch, const FixtureLibrary& library,
+                        const std::string& defaultLayer, MvrWriteReport* rep = nullptr);
 
 // ---------------------------------------------------------------------------
 // Pieces worth testing on their own

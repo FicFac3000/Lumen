@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 namespace lumen {
@@ -204,6 +205,190 @@ std::optional<std::string> ZipReader::readText(const std::string& name,
     auto bytes = read(name, err);
     if (!bytes) return std::nullopt;
     return std::string(bytes->begin(), bytes->end());
+}
+
+// ---------------------------------------------------------------------------
+// Writer
+// ---------------------------------------------------------------------------
+std::optional<std::vector<uint8_t>> deflateRaw(const uint8_t* src, size_t srcLen,
+                                               int level) {
+    z_stream zs{};
+    // Negative window bits: a raw stream with no zlib header, which is what
+    // ZIP stores.
+    if (deflateInit2(&zs, level, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+        return std::nullopt;
+
+    std::vector<uint8_t> out(deflateBound(&zs, static_cast<uLong>(srcLen)) + 16);
+    zs.next_in = const_cast<Bytef*>(src);
+    zs.avail_in = static_cast<uInt>(srcLen);
+    zs.next_out = out.data();
+    zs.avail_out = static_cast<uInt>(out.size());
+
+    const int rc = deflate(&zs, Z_FINISH);
+    const size_t produced = out.size() - zs.avail_out;
+    deflateEnd(&zs);
+    if (rc != Z_STREAM_END) return std::nullopt;
+    out.resize(produced);
+    return out;
+}
+
+namespace {
+
+void put16(std::vector<uint8_t>& v, uint16_t x) {
+    v.push_back(static_cast<uint8_t>(x & 0xff));
+    v.push_back(static_cast<uint8_t>((x >> 8) & 0xff));
+}
+
+void put32(std::vector<uint8_t>& v, uint32_t x) {
+    v.push_back(static_cast<uint8_t>(x & 0xff));
+    v.push_back(static_cast<uint8_t>((x >> 8) & 0xff));
+    v.push_back(static_cast<uint8_t>((x >> 16) & 0xff));
+    v.push_back(static_cast<uint8_t>((x >> 24) & 0xff));
+}
+
+void putBytes(std::vector<uint8_t>& v, const std::string& s) {
+    v.insert(v.end(), s.begin(), s.end());
+}
+
+} // namespace
+
+void ZipWriter::add(const std::string& name, std::vector<uint8_t> bytes, bool compress) {
+    for (Pending& p : pending_) {
+        if (p.name != name) continue;
+        p.raw = std::move(bytes);
+        p.compress = compress;
+        return;
+    }
+    pending_.push_back({name, std::move(bytes), compress});
+}
+
+void ZipWriter::addText(const std::string& name, const std::string& text, bool compress) {
+    add(name, std::vector<uint8_t>(text.begin(), text.end()), compress);
+}
+
+bool ZipWriter::has(const std::string& name) const {
+    for (const Pending& p : pending_)
+        if (p.name == name) return true;
+    return false;
+}
+
+std::vector<uint8_t> ZipWriter::bytes() const {
+    struct Written {
+        std::string name;
+        uint32_t crc = 0;
+        uint32_t compressed = 0;
+        uint32_t uncompressed = 0;
+        uint16_t method = 0;
+        uint32_t localOffset = 0;
+    };
+
+    std::vector<uint8_t> out;
+    std::vector<Written> written;
+    written.reserve(pending_.size());
+
+    for (const Pending& p : pending_) {
+        Written w;
+        w.name = p.name;
+        w.uncompressed = static_cast<uint32_t>(p.raw.size());
+        w.crc = static_cast<uint32_t>(
+            crc32(0L, p.raw.empty() ? nullptr : p.raw.data(),
+                  static_cast<uInt>(p.raw.size())));
+        w.localOffset = static_cast<uint32_t>(out.size());
+
+        std::vector<uint8_t> payload;
+        if (p.compress && !p.raw.empty()) {
+            if (auto z = deflateRaw(p.raw.data(), p.raw.size())) {
+                // Deflate on already-compressed data (an embedded .gdtf, a
+                // PNG) grows it. Storing is both smaller and faster to read.
+                if (z->size() < p.raw.size()) {
+                    payload = std::move(*z);
+                    w.method = 8;
+                }
+            }
+        }
+        if (w.method == 0) payload = p.raw;
+        w.compressed = static_cast<uint32_t>(payload.size());
+
+        put32(out, 0x04034b50);                             // local header
+        put16(out, 20);                                     // version needed
+        put16(out, 0);                                      // flags
+        put16(out, w.method);
+        put16(out, 0);                                      // mod time
+        // A fixed 1980-01-01, so the same input always produces the same
+        // archive. A real timestamp would make every export differ.
+        put16(out, 0x0021);                                 // mod date
+        put32(out, w.crc);
+        put32(out, w.compressed);
+        put32(out, w.uncompressed);
+        put16(out, static_cast<uint16_t>(w.name.size()));
+        put16(out, 0);                                      // extra length
+        putBytes(out, w.name);
+        out.insert(out.end(), payload.begin(), payload.end());
+
+        written.push_back(std::move(w));
+    }
+
+    const uint32_t cdStart = static_cast<uint32_t>(out.size());
+    for (const Written& w : written) {
+        put32(out, 0x02014b50);                             // central directory
+        put16(out, 20);                                     // version made by
+        put16(out, 20);                                     // version needed
+        put16(out, 0);                                      // flags
+        put16(out, w.method);
+        put16(out, 0);
+        put16(out, 0x21);
+        put32(out, w.crc);
+        put32(out, w.compressed);
+        put32(out, w.uncompressed);
+        put16(out, static_cast<uint16_t>(w.name.size()));
+        put16(out, 0);                                      // extra
+        put16(out, 0);                                      // comment
+        put16(out, 0);                                      // disk number
+        put16(out, 0);                                      // internal attrs
+        put32(out, 0);                                      // external attrs
+        put32(out, w.localOffset);
+        putBytes(out, w.name);
+    }
+    const uint32_t cdSize = static_cast<uint32_t>(out.size()) - cdStart;
+
+    put32(out, 0x06054b50);                                 // end of central dir
+    put16(out, 0);
+    put16(out, 0);
+    put16(out, static_cast<uint16_t>(written.size()));
+    put16(out, static_cast<uint16_t>(written.size()));
+    put32(out, cdSize);
+    put32(out, cdStart);
+    put16(out, 0);                                          // comment length
+    return out;
+}
+
+bool ZipWriter::writeFile(const std::string& path, std::string* err) const {
+    const std::vector<uint8_t> data = bytes();
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
+        if (!o) {
+            if (err) *err = "cannot open " + tmp;
+            return false;
+        }
+        if (!data.empty())
+            o.write(reinterpret_cast<const char*>(data.data()),
+                    static_cast<std::streamsize>(data.size()));
+        o.flush();
+        if (!o) {
+            if (err) *err = "write failed: " + tmp;
+            return false;
+        }
+    }
+    // Replace the previous file only once a complete one exists.
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        if (err) *err = "rename failed: " + ec.message();
+        return false;
+    }
+    return true;
 }
 
 } // namespace lumen

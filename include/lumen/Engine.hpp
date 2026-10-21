@@ -4,6 +4,7 @@
 
 #include "lumen/Cue.hpp"
 #include "lumen/Group.hpp"
+#include "lumen/Library.hpp"
 #include "lumen/Output.hpp"
 #include "lumen/Patch.hpp"
 #include "lumen/Preset.hpp"
@@ -115,6 +116,9 @@ public:
     GroupStore groups{uids};
     PresetStore presets{uids};
     RecipeLibrary recipes{uids};
+    // Fixture definitions, each keeping the .gdtf package it came from
+    // (Library.hpp). The patch holds compiled types; this holds the sources.
+    FixtureLibrary library{uids};
 
     // deque, not vector: ensureSequence()/ensureExecutor() return references,
     // and a vector push_back would invalidate every outstanding one. This bit
