@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace check {
@@ -34,6 +35,32 @@ inline void record(bool ok, const char* expr, const char* file, int line,
 
 inline bool near(double a, double b, double eps = 1e-4) { return std::fabs(a - b) <= eps; }
 
+// Renders a value for a failure message. Arithmetic types print; containers
+// are joined; anything else degrades to a placeholder rather than failing to
+// compile, so CHECK_EQ works on any comparable type.
+template <typename T>
+std::string describe(const T& v);
+
+template <typename T>
+std::string describe(const std::vector<T>& v) {
+    std::string o = "[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) o += ", ";
+        o += describe(v[i]);
+    }
+    return o + "]";
+}
+
+inline std::string describe(const std::string& v) { return "\"" + v + "\""; }
+
+template <typename T>
+std::string describe(const T& v) {
+    if constexpr (std::is_arithmetic_v<T>) return std::to_string(v);
+    else if constexpr (std::is_enum_v<T>)
+        return std::to_string(static_cast<long long>(v));
+    else return "<value>";
+}
+
 inline int report(const char* suite) {
     const auto& s = stats();
     if (s.failed == 0) {
@@ -56,8 +83,8 @@ inline int report(const char* suite) {
         auto _a = (a);                                                              \
         auto _b = (b);                                                              \
         ::check::record(_a == _b, #a " == " #b, __FILE__, __LINE__,                  \
-                        std::string("got ") + std::to_string(_a) + ", want " +       \
-                            std::to_string(_b));                                    \
+                        std::string("got ") + ::check::describe(_a) + ", want " +    \
+                            ::check::describe(_b));                                  \
     } while (0)
 
 #define CHECK_NEAR(a, b)                                                            \

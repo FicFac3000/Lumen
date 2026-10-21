@@ -26,6 +26,7 @@ add_library(lumen_core
   src/Radial.cpp
   src/Preset.cpp
   src/Recipe.cpp
+  src/Group.cpp
   src/Output.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
@@ -96,5 +97,11 @@ target_link_libraries(test_recipe PRIVATE lumen_core)
 target_include_directories(test_recipe PRIVATE tests)
 target_compile_options(test_recipe PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME recipe COMMAND test_recipe)
+
+add_executable(test_group tests/test_group.cpp)
+target_link_libraries(test_group PRIVATE lumen_core)
+target_include_directories(test_group PRIVATE tests)
+target_compile_options(test_group PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME group COMMAND test_group)
 
 
