@@ -21,13 +21,15 @@ add_library(lumen_core
   src/Engine.cpp
   src/Command.cpp
   src/Builtins.cpp
+  src/Show.cpp
   src/Output.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
 target_compile_options(lumen_core PRIVATE -Wall -Wextra -Wpedantic)
 
 find_package(Threads REQUIRED)
-target_link_libraries(lumen_core PUBLIC Threads::Threads)
+find_package(SQLite3 REQUIRED)
+target_link_libraries(lumen_core PUBLIC Threads::Threads SQLite::SQLite3)
 
 enable_testing()
 
@@ -66,5 +68,11 @@ target_link_libraries(test_command PRIVATE lumen_core)
 target_include_directories(test_command PRIVATE tests)
 target_compile_options(test_command PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME command COMMAND test_command)
+
+add_executable(test_show tests/test_show.cpp)
+target_link_libraries(test_show PRIVATE lumen_core SQLite::SQLite3)
+target_include_directories(test_show PRIVATE tests)
+target_compile_options(test_show PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME show COMMAND test_show)
 
 

@@ -153,7 +153,7 @@ bool Patch::add(const PatchRequest& req, std::string* err) {
                     std::to_string(clash->universe) + "." + std::to_string(clash->address));
 
     Fixture fx;
-    fx.uid = uids_->next();
+    fx.uid = req.uid.valid() ? req.uid : uids_->next();
     fx.id = req.id;
     fx.name = req.name.empty() ? (ft.name + " " + std::to_string(req.id)) : req.name;
     fx.typeIndex = req.typeIndex;

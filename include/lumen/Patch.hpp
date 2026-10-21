@@ -105,6 +105,9 @@ public:
         int typeIndex = -1;
         int universe = 1;
         int address = 1;
+        // A load restores the saved identity. Set it here rather than writing
+        // the field afterwards, or the by-UID index keeps the generated one.
+        Uid uid{};
     };
 
     bool add(const PatchRequest& req, std::string* err = nullptr);
