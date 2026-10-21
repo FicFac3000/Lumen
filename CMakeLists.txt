@@ -30,6 +30,7 @@ add_library(lumen_core
   src/Xml.cpp
   src/Zip.cpp
   src/Gdtf.cpp
+  src/Mvr.cpp
   src/Output.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
@@ -115,5 +116,11 @@ target_link_libraries(test_gdtf PRIVATE lumen_core)
 target_include_directories(test_gdtf PRIVATE tests)
 target_compile_options(test_gdtf PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME gdtf COMMAND test_gdtf)
+
+add_executable(test_mvr tests/test_mvr.cpp)
+target_link_libraries(test_mvr PRIVATE lumen_core)
+target_include_directories(test_mvr PRIVATE tests)
+target_compile_options(test_mvr PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME mvr COMMAND test_mvr)
 
 

@@ -4,6 +4,9 @@
 // in the UI, a macro, a plugin or an agent gets a privileged path into the
 // model that bypasses this file.
 #include "lumen/Command.hpp"
+#include "lumen/Gdtf.hpp"
+#include "lumen/Mvr.hpp"
+#include "lumen/Show.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -370,6 +373,19 @@ void Console::installBuiltins() {
             const int ti = ctx.engine.patch.findType(typeName);
             if (ti < 0) return Result::bad("unknown fixture type: " + typeName);
 
+            // `count` only means anything when one id was given: with a range
+            // the targets already carry the count. Declared metadata that the
+            // handler ignores is exactly the drift this layer exists to stop.
+            std::vector<Target> expanded = targets;
+            const int count = static_cast<int>(ctx.number(1, 1));
+            if (targets.size() == 1 && count > 1) {
+                expanded.clear();
+                for (int i = 0; i < count; ++i)
+                    expanded.push_back({static_cast<FixtureId>(targets[0].fixture +
+                                                               static_cast<FixtureId>(i)),
+                                        0});
+            }
+
             const int universe = static_cast<int>(ctx.number(2, 1));
             int address = static_cast<int>(ctx.number(3, 0));
             const int fp = ctx.engine.patch.type(ti).footprint();
@@ -377,7 +393,7 @@ void Console::installBuiltins() {
 
             int made = 0;
             std::string err;
-            for (const Target& t : targets) {
+            for (const Target& t : expanded) {
                 Patch::PatchRequest req;
                 req.id = t.fixture;
                 req.typeIndex = ti;
@@ -413,12 +429,118 @@ void Console::installBuiltins() {
                                                       "fixture", "fixtures"));
         }});
 
+    // ----------------------------------------------------------- show files
+    registry_.add({
+        "SaveShow", {},
+        {{"path", ParamType::String, true, "where to write the .lumen file"},
+         {"name", ParamType::String, false, "show name stored in the file"}},
+        Privilege::Operator, false, false,
+        "Writes the whole show in one transaction (SPEC 17.7). The previous "
+        "file is replaced only once a complete one exists.",
+        [](Context& ctx) -> Result {
+            const std::string path = ctx.text(0);
+            if (path.empty()) return Result::bad("no path given");
+            SaveReport s = ShowFile::save(ctx.engine, path, ctx.text(1));
+            if (!s.ok) return Result::bad("save failed: " + s.error);
+            std::ostringstream o;
+            o << s.fixtures << " fixtures, " << s.cues << " cues, " << s.values
+              << " values, " << s.groups << " groups, " << s.presets << " presets, "
+              << s.recipes << " recipes";
+            return Result::good(o.str());
+        }});
+
+    registry_.add({
+        "LoadShow", {},
+        {{"path", ParamType::String, true, "a .lumen file"}},
+        Privilege::Protected, true, false,
+        "Replaces the current show. Protected and destructive: on failure the "
+        "engine is left exactly as it was.",
+        [](Context& ctx) -> Result {
+            const std::string path = ctx.text(0);
+            if (path.empty()) return Result::bad("no path given");
+            LoadReport l = ShowFile::load(ctx.engine, path);
+            if (!l.ok) return Result::bad("load failed: " + l.error);
+            Result r = Result::good();
+            for (const auto& w : l.warnings) r.rows.push_back("warning: " + w);
+            std::ostringstream o;
+            o << (l.showName.empty() ? std::string("untitled") : l.showName) << ": "
+              << l.fixtures << " fixtures, " << l.cues << " cues, " << l.executors
+              << " executors";
+            r.message = o.str();
+            return r;
+        }});
+
+    // --------------------------------------------------------------- import
+    registry_.add({
+        "ImportGdtf", {},
+        {{"path", ParamType::String, true, "path to a .gdtf package"},
+         {"mode", ParamType::String, false, "DMX mode name; all modes if omitted"}},
+        Privilege::Operator, false, false,
+        "Imports a GDTF profile as fixture types. Unmapped source attributes "
+        "are reported rather than dropped (SPEC 6.3).",
+        [](Context& ctx) -> Result {
+            const std::string path = ctx.text(0);
+            if (path.empty()) return Result::bad("no path given");
+            GdtfReport g = loadGdtfFile(path);
+            if (!g.ok) return Result::bad("gdtf: " + g.error);
+
+            const std::string want = ctx.text(1);
+            int added = 0;
+            Result r = Result::good();
+            for (const auto& mode : g.info.modes) {
+                if (!want.empty() && mode.name != want) continue;
+                ctx.engine.patch.addType(mode.type);
+                ++added;
+                r.rows.push_back(mode.type.name + "  " +
+                                 std::to_string(mode.type.footprint()) + "ch");
+            }
+            if (added == 0)
+                return Result::bad(want.empty() ? "profile has no modes"
+                                                : "no mode named " + want);
+            for (const auto& u : g.unmapped)
+                r.rows.push_back("unmapped: " + u.gdtfAttribute + " (" + u.mode + ")");
+            for (const auto& w : g.warnings) r.rows.push_back("warning: " + w);
+            r.message = g.info.name + ": " + plural(static_cast<size_t>(added),
+                                                    "type", "types");
+            return r;
+        }});
+
+    registry_.add({
+        "ImportMvr", {},
+        {{"path", ParamType::String, true, "path to a .mvr file"}},
+        Privilege::Operator, false, false,
+        "Imports an MVR: profiles, patch, stage positions and one group per "
+        "layer (SPEC 17.5). Additive: an id already in use is renumbered and "
+        "reported, never overwritten, which is why this is not Protected.",
+        [](Context& ctx) -> Result {
+            const std::string path = ctx.text(0);
+            if (path.empty()) return Result::bad("no path given");
+            MvrReport m = loadMvrFile(path);
+            if (!m.ok) return Result::bad("mvr: " + m.error);
+
+            MvrApplyReport ap =
+                applyMvr(ctx.engine.patch, &ctx.engine.groups, m);
+            ctx.engine.syncUniverses();
+
+            Result r = Result::good();
+            for (const auto& w : m.warnings) r.rows.push_back("file: " + w);
+            for (const auto& w : ap.warnings) r.rows.push_back("patch: " + w);
+            std::ostringstream o;
+            o << ap.patched << " patched, " << ap.typesAdded << " type(s), "
+              << ap.groupsCreated << " group(s)";
+            if (ap.skipped) o << ", " << ap.skipped << " skipped";
+            r.message = o.str();
+            // Nothing landing at all is a failed import, not a quiet success.
+            if (ap.patched == 0) return Result::bad(o.str());
+            return r;
+        }});
+
     // -------------------------------------------------- introspection (16.3)
     registry_.add({
         "List", {"ls"},
         {{"what", ParamType::Enum, true, "what to list",
           {"patch", "types", "sequences", "executors", "programmer", "selection",
-           "commands"}}},
+           "groups", "presets", "recipes", "commands"}}},
         Privilege::Any, false, false,
         "Structured query over the show model. Paginated by the caller, never "
         "a whole-show dump (SPEC 16.3).",
@@ -473,6 +595,31 @@ void Console::installBuiltins() {
                     std::ostringstream o;
                     o << t.fixture;
                     if (t.cell) o << "." << t.cell;
+                    r.rows.push_back(o.str());
+                }
+            } else if (what == "groups") {
+                for (const auto& g : e.groups.all()) {
+                    std::ostringstream o;
+                    o << g.id << "  " << g.name << "  " << groupKindName(g.kind);
+                    if (g.isDynamic())
+                        o << "  " << e.groups.resolve(g.uid, e.patch).targets.size()
+                          << " matched";
+                    else
+                        o << "  " << g.members.size() << " member(s)";
+                    if (g.isNested()) o << "  +" << g.children.size() << " nested";
+                    r.rows.push_back(o.str());
+                }
+            } else if (what == "presets") {
+                for (const auto& p : e.presets.pools()) {
+                    std::ostringstream o;
+                    o << p.id << "  " << p.name << "  " << groupName(p.group) << "  "
+                      << p.presets.size() << " preset(s)";
+                    r.rows.push_back(o.str());
+                }
+            } else if (what == "recipes") {
+                for (const auto& rc : e.recipes.all()) {
+                    std::ostringstream o;
+                    o << rc.name << "  " << rc.slots.size() << " slot(s)";
                     r.rows.push_back(o.str());
                 }
             } else if (what == "commands") {

@@ -83,6 +83,9 @@ public:
         return *this;
     }
     Stmt& bindUid(int i, Uid u) { return bind(i, static_cast<int64_t>(u.v)); }
+    // An absent facet must stay NULL, so "no filter" and "filter on zero"
+    // cannot collapse into the same stored row.
+    Stmt& bindNull(int i) { sqlite3_bind_null(st_, i); return *this; }
 
     bool step() { return sqlite3_step(st_) == SQLITE_ROW; }
     bool run() {
@@ -224,7 +227,100 @@ CREATE TABLE IF NOT EXISTS executor_release (
   exec_uid INTEGER NOT NULL, grp INTEGER NOT NULL, mode INTEGER NOT NULL,
   FOREIGN KEY(exec_uid) REFERENCES executor(uid) ON DELETE CASCADE);
 
+CREATE TABLE IF NOT EXISTS grp (
+  uid INTEGER PRIMARY KEY, gid INTEGER NOT NULL, name TEXT NOT NULL,
+  kind INTEGER NOT NULL, allow_overrides INTEGER NOT NULL, ord INTEGER NOT NULL,
+  q_type TEXT, q_universe INTEGER, q_addr_from INTEGER, q_addr_to INTEGER,
+  q_id_from INTEGER, q_id_to INTEGER,
+  q_attr INTEGER, q_group INTEGER, q_kind INTEGER, q_sort TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS grp_member (
+  group_uid INTEGER NOT NULL, fixture INTEGER NOT NULL, cell INTEGER NOT NULL,
+  ord INTEGER NOT NULL,
+  FOREIGN KEY(group_uid) REFERENCES grp(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS grp_child (
+  group_uid INTEGER NOT NULL, child_uid INTEGER NOT NULL, ord INTEGER NOT NULL,
+  FOREIGN KEY(group_uid) REFERENCES grp(uid) ON DELETE CASCADE);
+
+-- Overrides and query tags are sticky by UID in both directions (SPEC 20.8),
+-- so they persist as their own rows rather than being folded into membership.
+CREATE TABLE IF NOT EXISTS grp_override (
+  group_uid INTEGER NOT NULL, fixture_uid INTEGER NOT NULL, included INTEGER NOT NULL,
+  FOREIGN KEY(group_uid) REFERENCES grp(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS grp_tag (
+  group_uid INTEGER NOT NULL, tag TEXT NOT NULL, is_query INTEGER NOT NULL,
+  FOREIGN KEY(group_uid) REFERENCES grp(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS preset_pool (
+  pid INTEGER PRIMARY KEY, name TEXT NOT NULL, grp INTEGER NOT NULL,
+  ord INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS preset (
+  uid INTEGER PRIMARY KEY, pool INTEGER NOT NULL, pid INTEGER NOT NULL,
+  name TEXT NOT NULL, grp INTEGER NOT NULL, generated INTEGER NOT NULL,
+  symbol_override TEXT NOT NULL, indicator_override TEXT NOT NULL,
+  ord INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS preset_value (
+  preset_uid INTEGER NOT NULL,
+  fixture INTEGER NOT NULL, cell INTEGER NOT NULL, attr INTEGER NOT NULL,
+  kind INTEGER NOT NULL, value REAL NOT NULL, active INTEGER NOT NULL,
+  ref_uid INTEGER NOT NULL, ref_attr INTEGER NOT NULL,
+  FOREIGN KEY(preset_uid) REFERENCES preset(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS preset_tag (
+  preset_uid INTEGER NOT NULL, tag TEXT NOT NULL,
+  FOREIGN KEY(preset_uid) REFERENCES preset(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS recipe (
+  uid INTEGER PRIMARY KEY, rid INTEGER NOT NULL, name TEXT NOT NULL,
+  speed REAL NOT NULL, size REAL NOT NULL, spread REAL NOT NULL,
+  offset REAL NOT NULL, base_hz REAL NOT NULL, ord INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS recipe_tag (
+  recipe_uid INTEGER NOT NULL, tag TEXT NOT NULL,
+  FOREIGN KEY(recipe_uid) REFERENCES recipe(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS recipe_slot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_uid INTEGER NOT NULL, ord INTEGER NOT NULL, label TEXT NOT NULL,
+  attr INTEGER NOT NULL, role INTEGER NOT NULL,
+  gen_kind INTEGER NOT NULL, wave INTEGER NOT NULL, duty REAL NOT NULL,
+  relative INTEGER NOT NULL, size_mul REAL NOT NULL, speed_mul REAL NOT NULL,
+  phase_offset REAL NOT NULL, centre REAL NOT NULL,
+  blocks INTEGER NOT NULL, wings INTEGER NOT NULL, groups REAL NOT NULL,
+  offset REAL NOT NULL, source INTEGER NOT NULL,
+  direction INTEGER NOT NULL, pivot INTEGER NOT NULL,
+  gap_on INTEGER NOT NULL, gap_len REAL NOT NULL, gap_frac INTEGER NOT NULL,
+  gap_nth INTEGER NOT NULL, gap_hold INTEGER NOT NULL, gap_place INTEGER NOT NULL,
+  gap_resume INTEGER NOT NULL, gap_scope INTEGER NOT NULL, gap_trans REAL NOT NULL,
+  var_phase REAL NOT NULL, var_speed REAL NOT NULL, var_size REAL NOT NULL,
+  var_seed INTEGER NOT NULL,
+  layer INTEGER NOT NULL, stack INTEGER NOT NULL, opacity REAL NOT NULL,
+  muted INTEGER NOT NULL, soloed INTEGER NOT NULL,
+  FOREIGN KEY(recipe_uid) REFERENCES recipe(uid) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS recipe_slot_step (
+  slot_id INTEGER NOT NULL, ord INTEGER NOT NULL,
+  value REAL NOT NULL, width REAL NOT NULL, attack REAL NOT NULL, decay REAL NOT NULL,
+  attack_curve REAL NOT NULL, decay_curve REAL NOT NULL,
+  FOREIGN KEY(slot_id) REFERENCES recipe_slot(id) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS recipe_slot_curve (
+  slot_id INTEGER NOT NULL, ord INTEGER NOT NULL,
+  x REAL NOT NULL, y REAL NOT NULL,
+  in_dx REAL NOT NULL, in_dy REAL NOT NULL, out_dx REAL NOT NULL, out_dy REAL NOT NULL,
+  FOREIGN KEY(slot_id) REFERENCES recipe_slot(id) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS recipe_slot_gap_seq (
+  slot_id INTEGER NOT NULL, ord INTEGER NOT NULL, length REAL NOT NULL,
+  FOREIGN KEY(slot_id) REFERENCES recipe_slot(id) ON DELETE CASCADE);
+
 CREATE INDEX IF NOT EXISTS ix_cue_seq ON cue(seq_uid, idx);
+CREATE INDEX IF NOT EXISTS ix_preset_pool ON preset(pool, pid);
+CREATE INDEX IF NOT EXISTS ix_slot_recipe ON recipe_slot(recipe_uid, ord);
 CREATE INDEX IF NOT EXISTS ix_val_cue ON cue_value(cue_uid);
 CREATE INDEX IF NOT EXISTS ix_chan_type ON type_channel(type_uid);
 )SQL";
@@ -600,6 +696,269 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
         }
     }
 
+    // --- groups (§20.8) ---------------------------------------------------
+    {
+        Stmt gp(db, "INSERT INTO grp(uid,gid,name,kind,allow_overrides,ord,q_type,"
+                    "q_universe,q_addr_from,q_addr_to,q_id_from,q_id_to,q_attr,"
+                    "q_group,q_kind,q_sort) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        Stmt gm(db, "INSERT INTO grp_member(group_uid,fixture,cell,ord) VALUES(?,?,?,?)");
+        Stmt gc(db, "INSERT INTO grp_child(group_uid,child_uid,ord) VALUES(?,?,?)");
+        Stmt go(db, "INSERT INTO grp_override(group_uid,fixture_uid,included) "
+                    "VALUES(?,?,?)");
+        Stmt gt(db, "INSERT INTO grp_tag(group_uid,tag,is_query) VALUES(?,?,?)");
+        if (!gp.valid() || !gm.valid() || !gc.valid() || !go.valid() || !gt.valid())
+            return fail("prepare groups");
+
+        int ord = 0;
+        for (const GroupDef& g : eng.groups.all()) {
+            const GroupQuery& q = g.query;
+            gp.reset();
+            gp.bindUid(1, g.uid)
+              .bind(2, g.id)
+              .bind(3, g.name)
+              .bind(4, static_cast<int>(g.kind))
+              .bind(5, g.allowOverrides ? 1 : 0)
+              .bind(6, ord++)
+              .bind(16, q.sortKey);
+            // An absent facet stays NULL, so "no filter" and "filter on 0" do
+            // not collapse into the same thing.
+            if (q.typeName) gp.bind(7, *q.typeName); else gp.bindNull(7);
+            if (q.universe) gp.bind(8, *q.universe); else gp.bindNull(8);
+            if (q.addressRange) {
+                gp.bind(9, q.addressRange->first).bind(10, q.addressRange->second);
+            } else {
+                gp.bindNull(9).bindNull(10);
+            }
+            if (q.idRange) {
+                gp.bind(11, static_cast<int64_t>(q.idRange->first))
+                  .bind(12, static_cast<int64_t>(q.idRange->second));
+            } else {
+                gp.bindNull(11).bindNull(12);
+            }
+            if (q.hasAttr) gp.bind(13, static_cast<int>(*q.hasAttr)); else gp.bindNull(13);
+            if (q.hasGroup) gp.bind(14, static_cast<int>(*q.hasGroup)); else gp.bindNull(14);
+            if (q.hasKind) gp.bind(15, static_cast<int>(*q.hasKind)); else gp.bindNull(15);
+            if (!gp.run()) return fail("write group");
+            ++rep.groups;
+
+            int i = 0;
+            for (const Target& t : g.members) {
+                gm.reset();
+                gm.bindUid(1, g.uid)
+                  .bind(2, static_cast<int64_t>(t.fixture))
+                  .bind(3, static_cast<int>(t.cell))
+                  .bind(4, i++);
+                if (!gm.run()) return fail("write group member");
+            }
+            i = 0;
+            for (Uid c : g.children) {
+                gc.reset();
+                gc.bindUid(1, g.uid).bindUid(2, c).bind(3, i++);
+                if (!gc.run()) return fail("write group child");
+            }
+            for (Uid u : g.includes) {
+                go.reset();
+                go.bindUid(1, g.uid).bindUid(2, u).bind(3, 1);
+                if (!go.run()) return fail("write group include");
+            }
+            for (Uid u : g.excludes) {
+                go.reset();
+                go.bindUid(1, g.uid).bindUid(2, u).bind(3, 0);
+                if (!go.run()) return fail("write group exclude");
+            }
+            for (const auto& tag : g.tags) {
+                gt.reset();
+                gt.bindUid(1, g.uid).bind(2, tag).bind(3, 0);
+                if (!gt.run()) return fail("write group tag");
+            }
+            for (const auto& tag : q.anyTag) {
+                gt.reset();
+                gt.bindUid(1, g.uid).bind(2, tag).bind(3, 1);
+                if (!gt.run()) return fail("write group query tag");
+            }
+        }
+    }
+
+    // --- presets (§7) -----------------------------------------------------
+    {
+        Stmt pl(db, "INSERT INTO preset_pool(pid,name,grp,ord) VALUES(?,?,?,?)");
+        Stmt pr(db, "INSERT INTO preset(uid,pool,pid,name,grp,generated,"
+                    "symbol_override,indicator_override,ord) VALUES(?,?,?,?,?,?,?,?,?)");
+        Stmt pv(db, "INSERT INTO preset_value(preset_uid,fixture,cell,attr,kind,value,"
+                    "active,ref_uid,ref_attr) VALUES(?,?,?,?,?,?,?,?,?)");
+        Stmt pt(db, "INSERT INTO preset_tag(preset_uid,tag) VALUES(?,?)");
+        if (!pl.valid() || !pr.valid() || !pv.valid() || !pt.valid())
+            return fail("prepare presets");
+
+        int poolOrd = 0;
+        for (const PresetPool& pool : eng.presets.pools()) {
+            pl.reset();
+            pl.bind(1, pool.id).bind(2, pool.name)
+              .bind(3, static_cast<int>(pool.group)).bind(4, poolOrd++);
+            if (!pl.run()) return fail("write preset pool");
+
+            int ord = 0;
+            for (const Preset& p : pool.presets) {
+                pr.reset();
+                pr.bindUid(1, p.uid)
+                  .bind(2, p.pool)
+                  .bind(3, p.id)
+                  .bind(4, p.name)
+                  .bind(5, static_cast<int>(p.group))
+                  .bind(6, p.generated ? 1 : 0)
+                  .bind(7, p.symbolOverride)
+                  .bind(8, p.indicatorOverride)
+                  .bind(9, ord++);
+                if (!pr.run()) return fail("write preset");
+                ++rep.presets;
+
+                for (AttrKey k : p.values.keys()) {
+                    const Value* v = p.values.find(k);
+                    pv.reset();
+                    pv.bindUid(1, p.uid)
+                      .bind(2, static_cast<int64_t>(keyFixture(k)))
+                      .bind(3, static_cast<int>(keyCell(k)))
+                      .bind(4, static_cast<int>(keyAttr(k)))
+                      .bind(5, static_cast<int>(v->kind))
+                      .bind(6, static_cast<double>(v->v))
+                      .bind(7, v->active ? 1 : 0)
+                      .bindUid(8, v->preset)
+                      .bind(9, static_cast<int>(v->presetAttr));
+                    if (!pv.run()) return fail("write preset value");
+                }
+                for (const auto& tag : p.tags) {
+                    pt.reset();
+                    pt.bindUid(1, p.uid).bind(2, tag);
+                    if (!pt.run()) return fail("write preset tag");
+                }
+            }
+        }
+    }
+
+    // --- FX recipes (§4) --------------------------------------------------
+    {
+        Stmt rc(db, "INSERT INTO recipe(uid,rid,name,speed,size,spread,offset,base_hz,ord)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)");
+        Stmt rt(db, "INSERT INTO recipe_tag(recipe_uid,tag) VALUES(?,?)");
+        Stmt sl(db, "INSERT INTO recipe_slot(recipe_uid,ord,label,attr,role,gen_kind,"
+                    "wave,duty,relative,size_mul,speed_mul,phase_offset,centre,blocks,"
+                    "wings,groups,offset,source,direction,pivot,gap_on,gap_len,gap_frac,"
+                    "gap_nth,gap_hold,gap_place,gap_resume,gap_scope,gap_trans,var_phase,"
+                    "var_speed,var_size,var_seed,layer,stack,opacity,muted,soloed) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+                    "?,?,?,?,?,?,?,?)");
+        Stmt ss(db, "INSERT INTO recipe_slot_step(slot_id,ord,value,width,attack,decay,"
+                    "attack_curve,decay_curve) VALUES(?,?,?,?,?,?,?,?)");
+        Stmt sc(db, "INSERT INTO recipe_slot_curve(slot_id,ord,x,y,in_dx,in_dy,out_dx,"
+                    "out_dy) VALUES(?,?,?,?,?,?,?,?)");
+        Stmt sg(db, "INSERT INTO recipe_slot_gap_seq(slot_id,ord,length) VALUES(?,?,?)");
+        if (!rc.valid() || !rt.valid() || !sl.valid() || !ss.valid() || !sc.valid() ||
+            !sg.valid())
+            return fail("prepare recipes");
+
+        int ord = 0;
+        for (const Recipe& r : eng.recipes.all()) {
+            rc.reset();
+            rc.bindUid(1, r.uid)
+              .bind(2, r.id)
+              .bind(3, r.name)
+              .bind(4, static_cast<double>(r.speed))
+              .bind(5, static_cast<double>(r.size))
+              .bind(6, static_cast<double>(r.spread))
+              .bind(7, static_cast<double>(r.offset))
+              .bind(8, static_cast<double>(r.baseHz))
+              .bind(9, ord++);
+            if (!rc.run()) return fail("write recipe");
+            ++rep.recipes;
+
+            for (const auto& tag : r.tags) {
+                rt.reset();
+                rt.bindUid(1, r.uid).bind(2, tag);
+                if (!rt.run()) return fail("write recipe tag");
+            }
+
+            int si = 0;
+            for (const Slot& s : r.slots) {
+                sl.reset();
+                // Bind positions written out explicitly: an incrementing
+                // counter inside one chained expression is unsequenced, which
+                // bit once already.
+                sl.bindUid(1, r.uid)
+                  .bind(2, si++)
+                  .bind(3, s.label)
+                  .bind(4, static_cast<int>(s.attr))
+                  .bind(5, static_cast<int>(s.role))
+                  .bind(6, static_cast<int>(s.gen.kind))
+                  .bind(7, static_cast<int>(s.gen.wave))
+                  .bind(8, static_cast<double>(s.gen.duty))
+                  .bind(9, s.relative ? 1 : 0)
+                  .bind(10, static_cast<double>(s.sizeMul))
+                  .bind(11, static_cast<double>(s.speedMul))
+                  .bind(12, static_cast<double>(s.phaseOffset))
+                  .bind(13, static_cast<double>(s.centre))
+                  .bind(14, s.mods.blocks)
+                  .bind(15, s.mods.wings)
+                  .bind(16, static_cast<double>(s.mods.groups))
+                  .bind(17, static_cast<double>(s.mods.offset))
+                  .bind(18, static_cast<int>(s.source))
+                  .bind(19, static_cast<int>(s.direction))
+                  .bind(20, static_cast<int>(s.pivot))
+                  .bind(21, s.gap.enabled ? 1 : 0)
+                  .bind(22, static_cast<double>(s.gap.length))
+                  .bind(23, s.gap.lengthIsFraction ? 1 : 0)
+                  .bind(24, s.gap.everyNth)
+                  .bind(25, static_cast<int>(s.gap.hold))
+                  .bind(26, static_cast<int>(s.gap.placement))
+                  .bind(27, static_cast<int>(s.gap.resume))
+                  .bind(28, static_cast<int>(s.gap.scope))
+                  .bind(29, static_cast<double>(s.gap.transition))
+                  .bind(30, static_cast<double>(s.variation.phase))
+                  .bind(31, static_cast<double>(s.variation.speed))
+                  .bind(32, static_cast<double>(s.variation.size))
+                  .bind(33, static_cast<int64_t>(s.variation.seed))
+                  .bind(34, s.layer)
+                  .bind(35, static_cast<int>(s.stack))
+                  .bind(36, static_cast<double>(s.opacity))
+                  .bind(37, s.muted ? 1 : 0)
+                  .bind(38, s.soloed ? 1 : 0);
+                if (!sl.run()) return fail("write slot");
+                const int64_t slotId = sqlite3_last_insert_rowid(db.raw());
+
+                int i = 0;
+                for (const Step& st : s.gen.steps) {
+                    ss.reset();
+                    ss.bind(1, slotId).bind(2, i++)
+                      .bind(3, static_cast<double>(st.value))
+                      .bind(4, static_cast<double>(st.width))
+                      .bind(5, static_cast<double>(st.attack))
+                      .bind(6, static_cast<double>(st.decay))
+                      .bind(7, static_cast<double>(st.attackCurve))
+                      .bind(8, static_cast<double>(st.decayCurve));
+                    if (!ss.run()) return fail("write slot step");
+                }
+                i = 0;
+                for (const CurvePoint& cp : s.gen.curve) {
+                    sc.reset();
+                    sc.bind(1, slotId).bind(2, i++)
+                      .bind(3, static_cast<double>(cp.x))
+                      .bind(4, static_cast<double>(cp.y))
+                      .bind(5, static_cast<double>(cp.inDx))
+                      .bind(6, static_cast<double>(cp.inDy))
+                      .bind(7, static_cast<double>(cp.outDx))
+                      .bind(8, static_cast<double>(cp.outDy));
+                    if (!sc.run()) return fail("write slot curve");
+                }
+                i = 0;
+                for (float len : s.gap.sequence) {
+                    sg.reset();
+                    sg.bind(1, slotId).bind(2, i++).bind(3, static_cast<double>(len));
+                    if (!sg.run()) return fail("write slot gap");
+                }
+            }
+        }
+    }
+
     if (!db.exec("COMMIT")) return fail("commit");
     db.close();
 
@@ -954,7 +1313,240 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
         }
     }
 
+    // --- groups -----------------------------------------------------------
+    GroupStore groups(eng.uids);
+    {
+        Stmt gp(db, "SELECT uid,gid,name,kind,allow_overrides,q_type,q_universe,"
+                    "q_addr_from,q_addr_to,q_id_from,q_id_to,q_attr,q_group,q_kind,"
+                    "q_sort FROM grp ORDER BY ord");
+        if (gp.valid()) {
+            while (gp.step()) {
+                GroupDef g;
+                g.uid = gp.uid(0);
+                g.id = gp.i32(1);
+                g.name = gp.text(2);
+                g.kind = gp.i32(3) == 1 ? GroupKind::Dynamic : GroupKind::Static;
+                g.allowOverrides = gp.i32(4) != 0;
+                eng.uids.observe(g.uid);
+
+                GroupQuery& q = g.query;
+                if (!gp.isNull(5)) q.typeName = gp.text(5);
+                if (!gp.isNull(6)) q.universe = gp.i32(6);
+                if (!gp.isNull(7) && !gp.isNull(8))
+                    q.addressRange = std::make_pair(gp.i32(7), gp.i32(8));
+                if (!gp.isNull(9) && !gp.isNull(10))
+                    q.idRange = std::make_pair(static_cast<FixtureId>(gp.i64(9)),
+                                               static_cast<FixtureId>(gp.i64(10)));
+                if (!gp.isNull(11)) q.hasAttr = static_cast<Attr>(gp.i32(11));
+                if (!gp.isNull(12)) q.hasGroup = static_cast<Group>(gp.i32(12));
+                if (!gp.isNull(13)) q.hasKind = static_cast<Kind>(gp.i32(13));
+                q.sortKey = gp.text(14);
+
+                Stmt gm(db, "SELECT fixture,cell FROM grp_member WHERE group_uid=? "
+                            "ORDER BY ord");
+                gm.bindUid(1, g.uid);
+                while (gm.step())
+                    g.members.push_back({static_cast<FixtureId>(gm.i64(0)),
+                                         static_cast<CellId>(gm.i32(1))});
+
+                Stmt gc(db, "SELECT child_uid FROM grp_child WHERE group_uid=? "
+                            "ORDER BY ord");
+                gc.bindUid(1, g.uid);
+                while (gc.step()) g.children.push_back(gc.uid(0));
+
+                Stmt go(db, "SELECT fixture_uid,included FROM grp_override "
+                            "WHERE group_uid=? ORDER BY rowid");
+                go.bindUid(1, g.uid);
+                while (go.step()) {
+                    if (go.i32(1) != 0) g.includes.push_back(go.uid(0));
+                    else g.excludes.push_back(go.uid(0));
+                }
+
+                Stmt gt(db, "SELECT tag,is_query FROM grp_tag WHERE group_uid=? "
+                            "ORDER BY rowid");
+                gt.bindUid(1, g.uid);
+                while (gt.step()) {
+                    if (gt.i32(1) != 0) g.query.anyTag.push_back(gt.text(0));
+                    else g.tags.push_back(gt.text(0));
+                }
+
+                groups.add(std::move(g));
+                ++rep.groups;
+            }
+        } else {
+            // An older file simply has no groups; that is not a failed load.
+            rep.warnings.push_back("file has no group table");
+        }
+    }
+
+    // --- presets ----------------------------------------------------------
+    PresetStore presets(eng.uids);
+    {
+        Stmt pl(db, "SELECT pid,name,grp FROM preset_pool ORDER BY ord");
+        if (pl.valid()) {
+            while (pl.step()) {
+                const int poolId = pl.i32(0);
+                presets.ensurePool(poolId, pl.text(1), static_cast<Group>(pl.i32(2)));
+            }
+
+            Stmt pr(db, "SELECT uid,pool,pid,name,grp,generated,symbol_override,"
+                        "indicator_override FROM preset ORDER BY pool,ord");
+            while (pr.step()) {
+                Preset p;
+                p.uid = pr.uid(0);
+                p.pool = pr.i32(1);
+                p.id = pr.i32(2);
+                p.name = pr.text(3);
+                p.group = static_cast<Group>(pr.i32(4));
+                p.generated = pr.i32(5) != 0;
+                p.symbolOverride = pr.text(6);
+                p.indicatorOverride = pr.text(7);
+                eng.uids.observe(p.uid);
+
+                Stmt pv(db, "SELECT fixture,cell,attr,kind,value,active,ref_uid,ref_attr "
+                            "FROM preset_value WHERE preset_uid=? ORDER BY rowid");
+                pv.bindUid(1, p.uid);
+                while (pv.step()) {
+                    const AttrKey k = makeKey(static_cast<FixtureId>(pv.i64(0)),
+                                              static_cast<CellId>(pv.i32(1)),
+                                              static_cast<Attr>(pv.i32(2)));
+                    Value v;
+                    v.kind = static_cast<Value::Kind>(pv.i32(3));
+                    v.v = static_cast<float>(pv.dbl(4));
+                    v.active = pv.i32(5) != 0;
+                    v.preset = pv.uid(6);
+                    v.presetAttr = static_cast<Attr>(pv.i32(7));
+                    p.values.setKey(k, v);
+                }
+
+                Stmt pt(db, "SELECT tag FROM preset_tag WHERE preset_uid=? ORDER BY rowid");
+                pt.bindUid(1, p.uid);
+                while (pt.step()) p.tags.push_back(pt.text(0));
+
+                presets.restore(std::move(p));
+                ++rep.presets;
+            }
+        } else {
+            rep.warnings.push_back("file has no preset table");
+        }
+    }
+
+    // --- FX recipes -------------------------------------------------------
+    RecipeLibrary recipes(eng.uids);
+    {
+        Stmt rc(db, "SELECT uid,rid,name,speed,size,spread,offset,base_hz "
+                    "FROM recipe ORDER BY ord");
+        if (rc.valid()) {
+            while (rc.step()) {
+                Recipe r;
+                r.uid = rc.uid(0);
+                r.id = rc.i32(1);
+                r.name = rc.text(2);
+                r.speed = static_cast<float>(rc.dbl(3));
+                r.size = static_cast<float>(rc.dbl(4));
+                r.spread = static_cast<float>(rc.dbl(5));
+                r.offset = static_cast<float>(rc.dbl(6));
+                r.baseHz = static_cast<float>(rc.dbl(7));
+                eng.uids.observe(r.uid);
+
+                Stmt rt(db, "SELECT tag FROM recipe_tag WHERE recipe_uid=? ORDER BY rowid");
+                rt.bindUid(1, r.uid);
+                while (rt.step()) r.tags.push_back(rt.text(0));
+
+                Stmt sl(db, "SELECT id,label,attr,role,gen_kind,wave,duty,relative,"
+                            "size_mul,speed_mul,phase_offset,centre,blocks,wings,groups,"
+                            "offset,source,direction,pivot,gap_on,gap_len,gap_frac,"
+                            "gap_nth,gap_hold,gap_place,gap_resume,gap_scope,gap_trans,"
+                            "var_phase,var_speed,var_size,var_seed,layer,stack,opacity,"
+                            "muted,soloed FROM recipe_slot WHERE recipe_uid=? ORDER BY ord");
+                sl.bindUid(1, r.uid);
+                while (sl.step()) {
+                    const int64_t slotId = sl.i64(0);
+                    Slot s;
+                    s.label = sl.text(1);
+                    s.attr = static_cast<Attr>(sl.i32(2));
+                    s.role = static_cast<Role>(sl.i32(3));
+                    s.gen.kind = static_cast<GenKind>(sl.i32(4));
+                    s.gen.wave = static_cast<Wave>(sl.i32(5));
+                    s.gen.duty = static_cast<float>(sl.dbl(6));
+                    s.relative = sl.i32(7) != 0;
+                    s.sizeMul = static_cast<float>(sl.dbl(8));
+                    s.speedMul = static_cast<float>(sl.dbl(9));
+                    s.phaseOffset = static_cast<float>(sl.dbl(10));
+                    s.centre = static_cast<float>(sl.dbl(11));
+                    s.mods.blocks = sl.i32(12);
+                    s.mods.wings = sl.i32(13);
+                    s.mods.groups = static_cast<float>(sl.dbl(14));
+                    s.mods.offset = static_cast<float>(sl.dbl(15));
+                    s.source = static_cast<SpreadSource>(sl.i32(16));
+                    s.direction = static_cast<Direction>(sl.i32(17));
+                    s.pivot = static_cast<BouncePivot>(sl.i32(18));
+                    s.gap.enabled = sl.i32(19) != 0;
+                    s.gap.length = static_cast<float>(sl.dbl(20));
+                    s.gap.lengthIsFraction = sl.i32(21) != 0;
+                    s.gap.everyNth = sl.i32(22);
+                    s.gap.hold = static_cast<GapHold>(sl.i32(23));
+                    s.gap.placement = static_cast<GapPlacement>(sl.i32(24));
+                    s.gap.resume = static_cast<GapResume>(sl.i32(25));
+                    s.gap.scope = static_cast<GapScope>(sl.i32(26));
+                    s.gap.transition = static_cast<float>(sl.dbl(27));
+                    s.variation.phase = static_cast<float>(sl.dbl(28));
+                    s.variation.speed = static_cast<float>(sl.dbl(29));
+                    s.variation.size = static_cast<float>(sl.dbl(30));
+                    s.variation.seed = static_cast<uint64_t>(sl.i64(31));
+                    s.layer = sl.i32(32);
+                    s.stack = static_cast<StackMode>(sl.i32(33));
+                    s.opacity = static_cast<float>(sl.dbl(34));
+                    s.muted = sl.i32(35) != 0;
+                    s.soloed = sl.i32(36) != 0;
+
+                    Stmt ss(db, "SELECT value,width,attack,decay,attack_curve,decay_curve "
+                                "FROM recipe_slot_step WHERE slot_id=? ORDER BY ord");
+                    ss.bind(1, slotId);
+                    while (ss.step()) {
+                        Step st;
+                        st.value = static_cast<float>(ss.dbl(0));
+                        st.width = static_cast<float>(ss.dbl(1));
+                        st.attack = static_cast<float>(ss.dbl(2));
+                        st.decay = static_cast<float>(ss.dbl(3));
+                        st.attackCurve = static_cast<float>(ss.dbl(4));
+                        st.decayCurve = static_cast<float>(ss.dbl(5));
+                        s.gen.steps.push_back(st);
+                    }
+
+                    Stmt sc(db, "SELECT x,y,in_dx,in_dy,out_dx,out_dy FROM "
+                                "recipe_slot_curve WHERE slot_id=? ORDER BY ord");
+                    sc.bind(1, slotId);
+                    while (sc.step()) {
+                        CurvePoint cp;
+                        cp.x = static_cast<float>(sc.dbl(0));
+                        cp.y = static_cast<float>(sc.dbl(1));
+                        cp.inDx = static_cast<float>(sc.dbl(2));
+                        cp.inDy = static_cast<float>(sc.dbl(3));
+                        cp.outDx = static_cast<float>(sc.dbl(4));
+                        cp.outDy = static_cast<float>(sc.dbl(5));
+                        s.gen.curve.push_back(cp);
+                    }
+
+                    Stmt sg(db, "SELECT length FROM recipe_slot_gap_seq WHERE slot_id=? "
+                                "ORDER BY ord");
+                    sg.bind(1, slotId);
+                    while (sg.step()) s.gap.sequence.push_back(static_cast<float>(sg.dbl(0)));
+
+                    r.slots.push_back(std::move(s));
+                }
+                recipes.add(std::move(r));
+                ++rep.recipes;
+            }
+        } else {
+            rep.warnings.push_back("file has no recipe table");
+        }
+    }
+
     // Everything read without error: now swap it in.
+    eng.groups = std::move(groups);
+    eng.presets = std::move(presets);
+    eng.recipes = std::move(recipes);
     eng.patch = std::move(patch);
     eng.sequences = std::move(seqs);
     eng.executors = std::move(execs);

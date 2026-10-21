@@ -130,6 +130,13 @@ public:
     bool readdress(FixtureId id, int universe, int address, std::string* err = nullptr);
     bool renumber(FixtureId from, FixtureId to, std::string* err = nullptr);
 
+    // Stage placement (§17.4). A setter rather than a mutable accessor, so an
+    // importer cannot reach in and change identity fields.
+    bool setPosition(FixtureId id, float x, float y, float z,
+                     float rx = 0.f, float ry = 0.f, float rz = 0.f);
+    bool addTag(FixtureId id, const std::string& tag);
+    bool rename(FixtureId id, const std::string& name);
+
     bool remove(FixtureId id);
     void clear();
 

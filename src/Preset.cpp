@@ -181,6 +181,17 @@ Preset& PresetStore::add(int poolId, Preset p) {
     return target.presets.back();
 }
 
+Preset& PresetStore::restore(Preset p) {
+    PresetPool* existing = pool(p.pool);
+    PresetPool& target =
+        existing ? *existing
+                 : ensurePool(p.pool, "Pool " + std::to_string(p.pool), p.group);
+    if (!p.uid.valid()) p.uid = uids_->next();
+    uids_->observe(p.uid);
+    target.presets.push_back(std::move(p));
+    return target.presets.back();
+}
+
 const Preset* PresetStore::find(Uid uid) const {
     for (const auto& pl : pools_)
         for (const auto& p : pl.presets)

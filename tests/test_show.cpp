@@ -125,11 +125,369 @@ void buildShow(Engine& eng) {
     e2.sequenceId = 1;
     e2.priority = -3;
 
+    // --- groups: one of each kind, plus nesting and overrides (§20.8) -----
+    GroupDef stat;
+    stat.name = "Front Movers";
+    stat.members = {{3, 0}, {1, 0}, {2, 0}};  // capture order is information
+    stat.tags.push_back("truss");
+    const Uid statUid = eng.groups.add(std::move(stat)).uid;
+
+    GroupDef dyn;
+    dyn.name = "All Spots";
+    dyn.kind = GroupKind::Dynamic;
+    dyn.query.typeName = "Moving Spot";
+    dyn.query.universe = 1;   // where the Patch command put them
+    dyn.query.addressRange = std::make_pair(1, 200);
+    dyn.query.idRange = std::make_pair(FixtureId(1), FixtureId(99));
+    dyn.query.hasAttr = Attr::Pan;
+    dyn.query.hasGroup = Group::Position;
+    dyn.query.hasKind = Kind::Continuous;
+    dyn.query.anyTag = {"upstage", "spot"};
+    dyn.query.sortKey = "x";
+    dyn.allowOverrides = true;
+    const Uid dynUid = eng.groups.add(std::move(dyn)).uid;
+    eng.groups.exclude(dynUid, eng.patch.find(2)->uid);
+    eng.groups.include(dynUid, eng.patch.find(20)->uid);
+
+    GroupDef nested;
+    nested.name = "Everything";
+    const Uid nestUid = eng.groups.add(std::move(nested)).uid;
+    eng.groups.nest(nestUid, statUid);
+    eng.groups.nest(nestUid, dynUid);
+
+    // --- presets (§7) -----------------------------------------------------
+    eng.presets.ensurePool(1, "Colour", Group::Color);
+    eng.presets.ensurePool(2, "Position", Group::Position);
+    {
+        Preset red;
+        red.name = "Red";
+        red.group = Group::Color;
+        red.symbolOverride = "R";
+        red.tags = {"primary", "warm"};
+        // Fixture 0 is the wildcard, so one preset covers anything with the
+        // attribute.
+        red.values.set(0, 0, Attr::Red, Value::hard(1.0f));
+        red.values.set(0, 0, Attr::Green, Value::hard(0.0f));
+        eng.presets.add(1, std::move(red));
+
+        Preset home;
+        home.name = "Home";
+        home.group = Group::Position;
+        home.generated = true;
+        home.indicatorOverride = "H";
+        home.values.set(1, 0, Attr::Pan, Value::hard(0.5f));
+        home.values.set(1, 0, Attr::Tilt, Value::hard(0.5f));
+        Value inactiveTilt = Value::hard(0.25f);
+        inactiveTilt.active = false;
+        home.values.set(2, 0, Attr::Tilt, inactiveTilt);
+        // A preset holding a reference to another preset must survive too.
+        home.values.set(3, 0, Attr::Pan, Value::ref(Uid{424242}, Attr::Pan, 0.3f));
+        eng.presets.add(2, std::move(home));
+    }
+
+    // --- FX recipes (§4) --------------------------------------------------
+    {
+        Recipe circle;
+        circle.name = "Saved Circle";
+        circle.speed = 1.75f;
+        circle.size = 0.6f;
+        circle.spread = 2.5f;
+        circle.offset = 0.125f;
+        circle.baseHz = 0.75f;
+        circle.tags = {"movement"};
+
+        Slot a;
+        a.label = "X";
+        a.role = Role::AxisX;
+        a.gen.wave = Wave::Cosine;
+        a.gen.duty = 0.4f;
+        a.sizeMul = 0.5f;
+        a.speedMul = 2.f;
+        a.phaseOffset = 0.25f;
+        a.centre = 0.4f;
+        a.relative = false;
+        a.mods = {2, 3, 1.5f, 0.0625f};
+        a.source = SpreadSource::StageRadial;
+        a.direction = Direction::Bounce;
+        a.pivot = BouncePivot::OverEnd;
+        a.gap = gapFromBehaviour(GapBehaviour::Stutter, 0.5f);
+        a.gap.sequence = {1.f, 1.f, 2.f};
+        a.variation = {0.1f, 0.2f, 0.3f, 777};
+        a.layer = 1;
+        a.stack = StackMode::Add;
+        a.opacity = 0.75f;
+        a.muted = true;
+        circle.slots.push_back(std::move(a));
+
+        Slot b;
+        b.label = "Steps";
+        b.attr = Attr::Dimmer;
+        b.gen.kind = GenKind::Steps;
+        b.gen.steps = {{0.1f, 0.5f, 0.2f, 0.3f, 0.4f, -0.4f}, {1.f, 1.f, 0.f, 0.f, 0.f, 0.f}};
+        circle.slots.push_back(std::move(b));
+
+        Slot c;
+        c.label = "Curve";
+        c.attr = Attr::Zoom;
+        c.gen.kind = GenKind::Curve;
+        c.gen.curve = {{0.f, 0.f, 0.f, 0.f, 0.2f, 0.1f}, {1.f, 1.f, -0.2f, 0.f, 0.f, 0.f}};
+        circle.slots.push_back(std::move(c));
+
+        eng.recipes.add(std::move(circle));
+    }
+
     eng.grandMaster = 0.8f;
     eng.unusedMode = UnusedMode::ToDefault;
 }
 
 } // namespace
+
+// Groups, presets and recipes hang off the engine, so they have to survive a
+// save: an imported MVR's layer groups would otherwise vanish on reopen.
+static void testGroupsPresetsRecipesRoundTrip() {
+    const std::string path = tmpDir() + "/stores.lumen";
+    fs::remove(path);
+
+    Engine a;
+    buildShow(a);
+
+    SaveReport sr = ShowFile::save(a, path, "Stores");
+    CHECK(sr.ok);
+    CHECK_EQ(sr.groups, 3);
+    CHECK_EQ(sr.presets, 2);
+    CHECK_EQ(sr.recipes, 1);
+
+    Engine b;
+    LoadReport lr = ShowFile::load(b, path);
+    CHECK(lr.ok);
+    CHECK_EQ(lr.groups, 3);
+    CHECK_EQ(lr.presets, 2);
+    CHECK_EQ(lr.recipes, 1);
+    CHECK(lr.warnings.empty());
+
+    // --- groups -----------------------------------------------------------
+    const GroupDef* stat = b.groups.byName("Front Movers");
+    CHECK(stat != nullptr);
+    CHECK(stat->kind == GroupKind::Static);
+    CHECK_EQ(stat->members.size(), size_t(3));
+    // Capture order is information (it drives FX spread), so it must survive
+    // in order rather than being sorted on the way through.
+    CHECK_EQ(int(stat->members[0].fixture), 3);
+    CHECK_EQ(int(stat->members[1].fixture), 1);
+    CHECK_EQ(int(stat->members[2].fixture), 2);
+    CHECK_EQ(stat->tags.size(), size_t(1));
+    CHECK(stat->tags[0] == "truss");
+
+    const GroupDef* dyn = b.groups.byName("All Spots");
+    CHECK(dyn != nullptr);
+    CHECK(dyn->kind == GroupKind::Dynamic);
+    CHECK(dyn->allowOverrides);
+    CHECK(dyn->query.typeName.has_value());
+    CHECK(*dyn->query.typeName == "Moving Spot");
+    CHECK(dyn->query.universe.has_value());
+    CHECK_EQ(*dyn->query.universe, 1);
+    CHECK(dyn->query.addressRange.has_value());
+    CHECK_EQ(dyn->query.addressRange->second, 200);
+    CHECK(dyn->query.idRange.has_value());
+    CHECK_EQ(int(dyn->query.idRange->second), 99);
+    CHECK(dyn->query.hasAttr.has_value());
+    CHECK(*dyn->query.hasAttr == Attr::Pan);
+    CHECK(dyn->query.hasGroup.has_value());
+    CHECK(*dyn->query.hasGroup == Group::Position);
+    CHECK(dyn->query.hasKind.has_value());
+    CHECK(dyn->query.sortKey == "x");
+    CHECK_EQ(dyn->query.anyTag.size(), size_t(2));
+    // Overrides are sticky by fixture UID in both directions.
+    CHECK_EQ(dyn->excludes.size(), size_t(1));
+    CHECK_EQ(dyn->includes.size(), size_t(1));
+    CHECK(dyn->excludes[0] == b.patch.find(2)->uid);
+    CHECK(dyn->includes[0] == b.patch.find(20)->uid);
+
+    // A dynamic group resolves against the reloaded patch, which is the real
+    // test: a restored query that matches nothing would look the same as a
+    // restored query that works.
+    GroupResolution res = b.groups.resolve(dyn->uid, b.patch);
+    // Four movers match the restored query, fixture 2 is the sticky exclude,
+    // and the pixel bar is the sticky include. Asserting only "> 0" would
+    // pass on a query that came back matching nothing but kept its include.
+    CHECK_EQ(res.queryMatched, 4);
+    CHECK_EQ(res.excluded, 1);
+    CHECK_EQ(res.included, 1);
+    CHECK_EQ(res.targets.size(), size_t(4));
+    for (const Target& t : res.targets) CHECK(t.fixture != 2);
+
+    const GroupDef* nest = b.groups.byName("Everything");
+    CHECK(nest != nullptr);
+    CHECK(nest->isNested());
+    CHECK_EQ(nest->children.size(), size_t(2));
+    CHECK(nest->children[0] == stat->uid);
+    CHECK(nest->children[1] == dyn->uid);
+    // Nesting survives as a tree, not a flattened list (§20.6).
+    Selection sel = b.groups.buildSelection(nest->uid, b.patch);
+    CHECK(sel.depth() >= 2);
+
+    // --- presets ----------------------------------------------------------
+    CHECK_EQ(b.presets.pools().size(), size_t(2));
+    const PresetPool* colour = b.presets.pool(1);
+    CHECK(colour != nullptr);
+    CHECK(colour->name == "Colour");
+    CHECK(colour->group == Group::Color);
+
+    const Preset* red = colour->byName("Red");
+    CHECK(red != nullptr);
+    CHECK(red->symbol() == "R");
+    CHECK_EQ(red->tags.size(), size_t(2));
+    CHECK_EQ(red->values.size(), size_t(2));
+    // The wildcard entry must stay fixture 0, or a generic palette silently
+    // becomes fixture-specific.
+    const auto rv = red->values.value(0, 0, Attr::Red);
+    CHECK(rv.has_value());
+    CHECK_NEAR(*rv, 1.0f);
+
+    const PresetPool* pos = b.presets.pool(2);
+    CHECK(pos != nullptr);
+    const Preset* home = pos->byName("Home");
+    CHECK(home != nullptr);
+    CHECK(home->generated);
+    CHECK(home->indicator() == "H");
+    // The inactive value and the preset reference both survive.
+    const Value* tilt = home->values.find(makeKey(2, 0, Attr::Tilt));
+    CHECK(tilt != nullptr);
+    CHECK(!tilt->active);
+    const Value* ref = home->values.find(makeKey(3, 0, Attr::Pan));
+    CHECK(ref != nullptr);
+    CHECK(ref->isRef());
+    CHECK(ref->preset == Uid{424242});
+    CHECK(ref->presetAttr == Attr::Pan);
+
+    // UIDs are preserved, because every reference in the show stores one.
+    const Preset* byUid = b.presets.find(red->uid);
+    CHECK(byUid == red);
+    const Preset* srcRed = a.presets.pool(1)->byName("Red");
+    CHECK(srcRed != nullptr);
+    CHECK(red->uid == srcRed->uid);
+    // And a restored name is not re-uniquified into "Red 2".
+    CHECK(red->name == "Red");
+
+    // --- recipes ----------------------------------------------------------
+    CHECK_EQ(b.recipes.size(), size_t(1));
+    const Recipe* rc = b.recipes.byName("Saved Circle");
+    CHECK(rc != nullptr);
+    CHECK_NEAR(rc->speed, 1.75f);
+    CHECK_NEAR(rc->size, 0.6f);
+    CHECK_NEAR(rc->spread, 2.5f);
+    CHECK_NEAR(rc->offset, 0.125f);
+    CHECK_NEAR(rc->baseHz, 0.75f);
+    CHECK_EQ(rc->tags.size(), size_t(1));
+    CHECK_EQ(rc->slots.size(), size_t(3));
+
+    const Slot& s0 = rc->slots[0];
+    CHECK(s0.label == "X");
+    CHECK(s0.role == Role::AxisX);        // the role, not a resolved attribute
+    CHECK(s0.gen.wave == Wave::Cosine);
+    CHECK_NEAR(s0.gen.duty, 0.4f);
+    CHECK(!s0.relative);
+    CHECK_NEAR(s0.sizeMul, 0.5f);
+    CHECK_NEAR(s0.speedMul, 2.f);
+    CHECK_NEAR(s0.phaseOffset, 0.25f);
+    CHECK_NEAR(s0.centre, 0.4f);
+    CHECK_EQ(s0.mods.blocks, 2);
+    CHECK_EQ(s0.mods.wings, 3);
+    CHECK_NEAR(s0.mods.groups, 1.5f);
+    CHECK_NEAR(s0.mods.offset, 0.0625f);
+    CHECK(s0.source == SpreadSource::StageRadial);
+    CHECK(s0.direction == Direction::Bounce);
+    CHECK(s0.pivot == BouncePivot::OverEnd);
+    CHECK(s0.gap.enabled);
+    CHECK_EQ(s0.gap.sequence.size(), size_t(3));
+    CHECK_NEAR(s0.gap.sequence[2], 2.f);
+    CHECK_EQ(int(s0.variation.seed), 777);
+    CHECK_EQ(s0.layer, 1);
+    CHECK(s0.stack == StackMode::Add);
+    CHECK_NEAR(s0.opacity, 0.75f);
+    CHECK(s0.muted);
+    CHECK(!s0.soloed);
+
+    const Slot& s1 = rc->slots[1];
+    CHECK(s1.gen.kind == GenKind::Steps);
+    CHECK_EQ(s1.gen.steps.size(), size_t(2));
+    CHECK_NEAR(s1.gen.steps[0].decayCurve, -0.4f);
+    CHECK(!s1.soloed);
+
+    const Slot& s2 = rc->slots[2];
+    CHECK(s2.gen.kind == GenKind::Curve);
+    CHECK_EQ(s2.gen.curve.size(), size_t(2));
+    CHECK_NEAR(s2.gen.curve[1].inDx, -0.2f);
+
+    // The restored recipe still instantiates: a reloaded FX that cannot be
+    // run is no better than a lost one. Slot 0 is muted, so two of the three
+    // compile — counted exactly, because "> 0" would pass on a recipe whose
+    // role slot came back unresolvable.
+    InstantiateReport ir = instantiate(*rc, {{1, 0}, {2, 0}, {3, 0}, {4, 0}}, b.patch);
+    CHECK_EQ(ir.phasers.size(), size_t(2));
+    CHECK_EQ(ir.slotsApplied, 2);
+    CHECK_EQ(ir.slotsEmpty, 0);
+    for (const Phaser& p : ir.phasers) CHECK_EQ(p.targets.size(), size_t(4));
+
+    // Un-muting the role slot proves AxisX still resolves to Pan on a mover
+    // after a reload — the keystone of §4.2 and the thing a lossy save would
+    // quietly break.
+    Recipe* live = b.recipes.byName("Saved Circle");
+    CHECK(live != nullptr);
+    live->slots[0].muted = false;
+    InstantiateReport ir2 = instantiate(*live, {{1, 0}, {2, 0}}, b.patch);
+    CHECK_EQ(ir2.phasers.size(), size_t(3));
+    bool drivesPan = false;
+    for (const Phaser& p : ir2.phasers)
+        if (p.attr == Attr::Pan || p.role == Role::AxisX) drivesPan = true;
+    CHECK(drivesPan);
+}
+
+// Saving and loading must be reachable through the command layer like
+// everything else (§16.2), and loading must be gated: it replaces the show.
+static void testShowFilesThroughTheConsole() {
+    const std::string path = tmpDir() + "/console.lumen";
+    fs::remove(path);
+
+    Engine a;
+    buildShow(a);
+    Console con(a);
+
+    Result sr = con.execute("SaveShow \"" + path + "\" \"Console Show\"");
+    CHECK(sr.parsed);
+    CHECK(sr.ok);
+    CHECK(fs::exists(path));
+    CHECK(sr.message.find("5 fixtures") != std::string::npos);
+
+    Engine b;
+    Console con2(b);
+
+    // Protected: an operator has to be granted it, and an agent never gets it.
+    Result denied = con2.execute("LoadShow \"" + path + "\"");
+    CHECK(denied.parsed);
+    CHECK(!denied.ok);
+    CHECK_EQ(b.patch.size(), size_t(0));
+
+    con2.setPrivilege(Privilege::Protected);
+    Result lr = con2.execute("LoadShow \"" + path + "\"");
+    CHECK(lr.ok);
+    CHECK_EQ(b.patch.size(), size_t(5));
+    CHECK_EQ(b.groups.size(), size_t(3));
+    CHECK(lr.message.find("Console Show") != std::string::npos);
+
+    // A failed load leaves the show that was already open alone.
+    Result bad = con2.execute("LoadShow \"" + tmpDir() + "/not-here.lumen\"");
+    CHECK(bad.parsed);
+    CHECK(!bad.ok);
+    CHECK_EQ(b.patch.size(), size_t(5));
+    CHECK_EQ(b.groups.size(), size_t(3));
+
+    // And the reloaded show runs.
+    CHECK(con2.execute("Fixture 1 At 100").ok);
+    b.tick();
+    const auto dim = b.merged().get(makeKey(1, 0, Attr::Dimmer));
+    CHECK(dim.has_value());
+}
 
 static void testRoundTrip() {
     const std::string path = tmpDir() + "/round.lumen";
@@ -543,6 +901,8 @@ static void testEmptyShow() {
 int main() {
     std::printf("lumen show\n");
     testRoundTrip();
+    testGroupsPresetsRecipesRoundTrip();
+    testShowFilesThroughTheConsole();
     testLoadedShowRuns();
     testUidsNotReused();
     testAtomicity();

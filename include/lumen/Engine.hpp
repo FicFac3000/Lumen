@@ -3,9 +3,12 @@
 #pragma once
 
 #include "lumen/Cue.hpp"
+#include "lumen/Group.hpp"
 #include "lumen/Output.hpp"
 #include "lumen/Patch.hpp"
+#include "lumen/Preset.hpp"
 #include "lumen/Programmer.hpp"
+#include "lumen/Recipe.hpp"
 #include "lumen/TripleBuffer.hpp"
 
 #include <array>
@@ -105,6 +108,13 @@ public:
     UidGen uids;
     Patch patch{uids};
     Programmer programmer{patch};
+
+    // Groups, presets and FX recipes belong to the show, so the engine owns
+    // them: anything the command layer can reach must hang off one root, or
+    // saving and loading quietly lose half the show.
+    GroupStore groups{uids};
+    PresetStore presets{uids};
+    RecipeLibrary recipes{uids};
 
     // deque, not vector: ensureSequence()/ensureExecutor() return references,
     // and a vector push_back would invalidate every outstanding one. This bit

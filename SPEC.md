@@ -3513,11 +3513,13 @@ Outcome: usable on a real rig.
 
 ### M4 — Fixture library
 
-- GDTF import and the taxonomy mapping (§6.3)
-- ChamSys `.hed` import from the user's own install (§1.1)
+- GDTF import and the taxonomy mapping (§6.3) — **built**
+- MVR import (§17.5) — **built**: profiles, patch, positions, layer groups
+- ChamSys `.hed` import from the user's own install (§1.1) — **blocked**, see
+  §21.2
 - Fixture editor: table + tree views (§1.2, §1.3)
 - GDTF builder (§1.4)
-- MVR import/export (§17.5)
+- MVR export (§17.5)
 
 ### M5 — Bindings and I/O
 
@@ -3574,3 +3576,54 @@ Specced lightly or not at all, and worth a pass before M3:
   boundaries (§7.2)
 - **Undo model** — grouping and transactions were assumed by §16.5 but never
   specified in their own right
+
+### 21.2 ChamSys `.hed` import — blocked
+
+`[flag]` This one cannot be built responsibly yet, and saying so is better than
+shipping a parser that half-works.
+
+The MagicQ head file format has no published specification, and nothing
+reliable describes it in enough detail to parse. A parser written against a
+guessed syntax would appear to work on the one file it was guessed from and
+mangle everything else — worse than no importer, because a silently wrong
+patch is discovered during a show.
+
+What unblocks it, in order of preference:
+
+1. A handful of real `.hed` files from a MagicQ install, ideally covering a
+   plain dimmer, an RGBW LED, a moving head with 16-bit pan/tilt and a
+   multi-instance fixture. Four files are enough to infer the grammar and
+   validate it against known-good channel layouts.
+2. MagicQ's own documentation of the format, if any exists.
+
+Until then, **GDTF and MVR cover the same ground**: both import the attribute
+and channel-set detail §7.2 and §7.3 need, and the GDTF library is far larger
+than ChamSys's. The `.hed` path is about honouring an existing ChamSys user's
+own edited library, not about fixture coverage.
+
+### 21.3 Built so far
+
+Engine and show model, with the command layer as the only mutation path:
+
+| Area | Spec | State |
+| --- | --- | --- |
+| Attribute taxonomy, kinds, roles | §6 | built |
+| Patch, cells, types, conflicts | §17.2, §17.3 | built |
+| Programmer, Clear machine, highlight | §11.8, §20.7 | built |
+| Phasers: waves, steps, bezier curves, gaps, bounce | §4.5–4.16 | built |
+| Cues, parts, tracking, block, shield | §11.1–11.7 | built |
+| Executors, merge, priority, release | §11.3, §11.4 | built |
+| Presets, pools, auto-stepper, range labels | §7.1–7.3 | built |
+| FX recipes, slots, role binding, parameter presets | §4.1–4.4, §4.17 | built |
+| Groups: static, nested, dynamic, overrides | §20.8 | built |
+| Spread sources and modifiers | §20.2–20.6 | built |
+| Window model, grid, panel sets, navigation | §2.2–2.8 | model only |
+| Radial menu geometry and tree | §5 | model + prototype |
+| Show file, autosave, atomic save | §17.7, §17.8 | built |
+| Command layer, privileges, agent schema | §16.2, §16.5 | built |
+| GDTF import, attribute mapping | §1.1, §6.3 | built |
+| MVR import | §17.5 | built |
+
+Not started: rendering (§2 needs a display), bindings and I/O (§12, §18, §19),
+pixel and video (§13), laser (§14), session networking (§18.7), plugins and the
+agent (§16.3, §16.4), 3D authoring (§17.4 stages 2–4).

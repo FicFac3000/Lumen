@@ -26,6 +26,9 @@ struct SaveReport {
     int values = 0;
     int phasers = 0;
     int executors = 0;
+    int groups = 0;
+    int presets = 0;
+    int recipes = 0;
 };
 
 struct LoadReport {
@@ -37,6 +40,9 @@ struct LoadReport {
     int sequences = 0;
     int cues = 0;
     int executors = 0;
+    int groups = 0;
+    int presets = 0;
+    int recipes = 0;
     // Things the file referenced that this build could not restore, rather
     // than failing the whole load. A show must open even if something in it
     // is unknown to this version.

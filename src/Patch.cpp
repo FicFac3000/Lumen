@@ -213,6 +213,38 @@ const Fixture* Patch::findByUid(Uid uid) const {
     return it == byUid_.end() ? nullptr : &fixtures_[it->second];
 }
 
+bool Patch::setPosition(FixtureId id, float x, float y, float z,
+                        float rx, float ry, float rz) {
+    auto it = byId_.find(id);
+    if (it == byId_.end()) return false;
+    Fixture& f = fixtures_[it->second];
+    f.x = x;
+    f.y = y;
+    f.z = z;
+    f.rotX = rx;
+    f.rotY = ry;
+    f.rotZ = rz;
+    f.positioned = true;
+    return true;
+}
+
+bool Patch::addTag(FixtureId id, const std::string& tag) {
+    auto it = byId_.find(id);
+    if (it == byId_.end() || tag.empty()) return false;
+    Fixture& f = fixtures_[it->second];
+    for (const auto& t : f.tags)
+        if (t == tag) return true;  // already there; not an error
+    f.tags.push_back(tag);
+    return true;
+}
+
+bool Patch::rename(FixtureId id, const std::string& name) {
+    auto it = byId_.find(id);
+    if (it == byId_.end()) return false;
+    fixtures_[it->second].name = name;
+    return true;
+}
+
 bool Patch::readdress(FixtureId id, int universe, int address, std::string* err) {
     auto it = byId_.find(id);
     if (it == byId_.end()) {

@@ -86,6 +86,11 @@ public:
     // Adds to a pool, assigning a UID and a unique name.
     Preset& add(int poolId, Preset p);
 
+    // Re-inserts a preset exactly as given — its own UID, id and name. A load
+    // must not rename or re-identify what it is restoring, which is why this
+    // is separate from add(). The pool is taken from the preset itself.
+    Preset& restore(Preset p);
+
     const Preset* find(Uid uid) const;
     Preset* findMut(Uid uid);
 
