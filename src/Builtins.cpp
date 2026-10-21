@@ -641,6 +641,118 @@ void Console::installBuiltins() {
             return r;
         }});
 
+    // ------------------------------------------------------------ learn (12)
+    registry_.add({
+        "Learn", {},
+        {{"state", ParamType::Enum, false, "on · off · next · clear",
+          {"on", "off", "next", "clear"}},
+         {"set", ParamType::String, false, "binding set to learn into"}},
+        Privilege::Operator, false, false,
+        "Enters or leaves Learn. Every bindable target highlights; send an "
+        "input to bind it to the focused one (SPEC 12.1).",
+        [](Context& ctx) -> Result {
+            if (!ctx.console) return Result::bad("learn needs a console");
+            Learn& learn = ctx.console->learn();
+            const std::string state = ctx.text(0, "on");
+            const std::string setName = ctx.text(1);
+
+            if (!setName.empty()) {
+                BindingSet* s = ctx.engine.bindings.setByName(setName);
+                if (!s) return Result::bad("no binding set named " + setName);
+                learn.setTargetSet(s->uid);
+            }
+
+            if (state == "off") {
+                learn.end();
+                return Result::good("learn off");
+            }
+            if (state == "clear") {
+                const int n = learn.clearSet();
+                return Result::good("cleared " +
+                                    plural(static_cast<size_t>(n), "binding",
+                                           "bindings"));
+            }
+            if (state == "next") {
+                if (!learn.focus(learn.focusIndex() + 1))
+                    return Result::bad("no further target");
+                const BindTarget* t = learn.focused();
+                return Result::good("learning " + (t ? t->describe() : std::string()));
+            }
+
+            if (!learn.targetSet().valid()) {
+                // Without a set, learning has nowhere to put anything. Make
+                // one rather than refusing, but say so.
+                BindingSet s;
+                s.name = "Default";
+                learn.setTargetSet(ctx.engine.bindings.addSet(std::move(s)).uid);
+                learn.begin();
+                return Result::good("learn on, into a new set 'Default'");
+            }
+            learn.begin();
+            const BindingSet* s = ctx.engine.bindings.set(learn.targetSet());
+            return Result::good("learn on, into '" + (s ? s->name : std::string()) +
+                                "'");
+        }});
+
+    registry_.add({
+        "Unlearn", {},
+        {}, Privilege::Operator, false, false,
+        "Removes the binding on the focused Learn target (SPEC 12.1).",
+        [](Context& ctx) -> Result {
+            if (!ctx.console) return Result::bad("unlearn needs a console");
+            const LearnResult r = ctx.console->learn().unlearnFocused();
+            if (r.outcome != LearnResult::Outcome::Unlearned)
+                return Result::bad(r.message.empty() ? "nothing to unlearn"
+                                                     : r.message);
+            return Result::good(r.message);
+        }});
+
+    registry_.add({
+        "BindingSet", {},
+        {{"name", ParamType::String, true, "the set"},
+         {"state", ParamType::Enum, false, "on · off · page",
+          {"on", "off", "page"}},
+         {"page", ParamType::Int, false, "page number, with state=page"}},
+        Privilege::Operator, false, false,
+        "Creates, enables or disables a named binding set, or makes it "
+        "page-local. Page-local bindings win over global ones (SPEC 12.6).",
+        [](Context& ctx) -> Result {
+            const std::string name = ctx.text(0);
+            if (name.empty()) return Result::bad("no set name given");
+            BindingSet* s = ctx.engine.bindings.setByName(name);
+            const std::string state = ctx.text(1, "on");
+
+            if (!s) {
+                if (state == "off") return Result::bad("no binding set named " + name);
+                BindingSet made;
+                made.name = name;
+                s = &ctx.engine.bindings.addSet(std::move(made));
+                return Result::good("created binding set '" + name + "'");
+            }
+            if (state == "page") {
+                s->page = static_cast<int>(ctx.number(2, 0));
+                return Result::good(name + " is now " +
+                                    (s->page ? "local to page " +
+                                                   std::to_string(s->page)
+                                             : std::string("global")));
+            }
+            ctx.engine.bindings.activate(s->uid, state != "off");
+            return Result::good(name + (state == "off" ? " disabled" : " enabled"));
+        }});
+
+    registry_.add({
+        "Page", {},
+        {{"page", ParamType::Int, true, "the active page"}},
+        Privilege::Operator, false, false,
+        "Switches the active executor page, which also switches which "
+        "page-local bindings resolve and resets fader takeover (SPEC 12.6).",
+        [](Context& ctx) -> Result {
+            const int page = static_cast<int>(ctx.number(0, 0));
+            if (page < 0) return Result::bad("page cannot be negative");
+            ctx.engine.bindings.setPage(page);
+            return Result::good("page " + std::to_string(page));
+        }});
+
     // -------------------------------------------------- introspection (16.3)
     registry_.add({
         "List", {"ls"},

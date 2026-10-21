@@ -2,6 +2,7 @@
 // (SPEC §11.3, §11.4, §11.9, §15.2).
 #pragma once
 
+#include "lumen/Binding.hpp"
 #include "lumen/Cue.hpp"
 #include "lumen/Group.hpp"
 #include "lumen/Library.hpp"
@@ -15,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -119,6 +121,34 @@ public:
     // Fixture definitions, each keeping the .gdtf package it came from
     // (Library.hpp). The patch holds compiled types; this holds the sources.
     FixtureLibrary library{uids};
+
+    // Remote control (§12). The queue is filled by the MIDI, OSC and DMX-in
+    // threads and drained at the TOP OF tick() — §12.7 is explicit that input
+    // handling must not run on the output thread, so a flood of MIDI cannot
+    // stall DMX.
+    BindingStore bindings{uids};
+    InputQueue inputs;
+
+    // What a drained input turned into, for the layer above to act on. The
+    // engine resolves and maps; it does not dispatch, because a Command
+    // target needs the command layer and the engine must not depend on it.
+    struct BindingAction {
+        Uid binding{};
+        BindTarget target;
+        Applied applied;
+    };
+    std::vector<BindingAction> pendingActions;
+
+    // The target's value right now, which catch and scale takeover both need
+    // (§12.4). The engine answers for what it owns and returns 0 otherwise;
+    // the layer above can supply the rest.
+    float bindingValue(const BindTarget& t) const;
+    std::function<float(const BindTarget&)> externalValue;
+
+    // Drains the input queue, resolves each event through the binding store
+    // and fills pendingActions. Called at the top of tick(); exposed so a
+    // test can drive it without running a whole frame.
+    int drainInputs();
 
     // deque, not vector: ensureSequence()/ensureExecutor() return references,
     // and a vector push_back would invalidate every outstanding one. This bit

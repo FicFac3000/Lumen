@@ -289,6 +289,37 @@ bool parseTargets(const std::vector<Token>& tokens, size_t& i,
 // ---------------------------------------------------------------------------
 Console::Console(Engine& engine) : engine_(engine) { installBuiltins(); }
 
+Console::Pumped Console::pumpBindings() {
+    Pumped out;
+    // Take the list, so a command that itself generates input cannot have us
+    // iterating a vector that is growing underneath.
+    std::vector<Engine::BindingAction> actions;
+    actions.swap(engine_.pendingActions);
+    out.actions = static_cast<int>(actions.size());
+
+    for (const Engine::BindingAction& a : actions) {
+        // A command target fires on a trigger or on the ON edge of a toggle
+        // or momentary; the OFF edge is not a second press.
+        const bool shouldFire = a.applied.fire && a.applied.fireOn;
+        if (a.target.kind == TargetKind::Command || !a.target.command.empty()) {
+            if (!shouldFire) continue;
+            if (a.target.command.empty()) continue;
+            const Result r = executeAll(a.target.command);
+            if (r.ok) ++out.executed;
+            else {
+                ++out.failed;
+                out.messages.push_back(a.target.command + ": " + r.message);
+            }
+            continue;
+        }
+        // Anything else the engine did not handle itself has no command to
+        // run. Reported rather than dropped silently, so a binding to a
+        // target nothing implements yet is visible instead of mysterious.
+        out.messages.push_back("no action for " + a.target.describe());
+    }
+    return out;
+}
+
 Result Console::executeAll(const std::string& script) {
     std::stringstream ss(script);
     std::string part;
@@ -346,10 +377,28 @@ Result Console::execute(const std::string& line) {
         return Result::bad(std::string("refused: ") + def->name + " requires " +
                            privilegeName(def->privilege) + " privilege");
 
-    Context ctx{engine_, registry_, targets, {}, granted_};
+    Context ctx{engine_, registry_, this, targets, {}, granted_};
     for (; tokens[i].kind != Token::Kind::End; ++i) {
         Arg a;
         a.raw = tokens[i].text;
+
+        // A minus followed by a number is a NEGATIVE NUMBER here, even though
+        // the same token is the remove operator in a selector clause (`1 Thru
+        // 10 - 5`). Without this, every numeric parameter silently drops a
+        // negative: `Page -1` arrived as no argument at all and fell back to
+        // the default, so a typo became a valid command. The selector clause
+        // has already been parsed by this point, so there is no ambiguity
+        // left to preserve.
+        if (tokens[i].kind == Token::Kind::Minus &&
+            tokens[i + 1].kind == Token::Kind::Number) {
+            ++i;
+            a.raw = "-" + tokens[i].text;
+            a.isNumber = true;
+            a.number = -tokens[i].number;
+            ctx.args.push_back(std::move(a));
+            continue;
+        }
+
         if (tokens[i].kind == Token::Kind::Number) {
             a.isNumber = true;
             a.number = tokens[i].number;

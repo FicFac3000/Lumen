@@ -383,6 +383,27 @@ CREATE TABLE IF NOT EXISTS library_revision (
   date TEXT NOT NULL,
   FOREIGN KEY(library_uid) REFERENCES library(uid) ON DELETE CASCADE);
 
+-- Binding sets (SPEC 12.6): stored in the show and swappable, so a
+-- controller map travels with the show rather than with the machine.
+CREATE TABLE IF NOT EXISTS binding_set (
+  uid INTEGER PRIMARY KEY, bid INTEGER NOT NULL, name TEXT NOT NULL,
+  enabled INTEGER NOT NULL, page INTEGER NOT NULL, ord INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS binding (
+  uid INTEGER PRIMARY KEY, set_uid INTEGER NOT NULL, bid INTEGER NOT NULL,
+  label TEXT NOT NULL, enabled INTEGER NOT NULL, ord INTEGER NOT NULL,
+  src_kind INTEGER NOT NULL, src_channel INTEGER NOT NULL, src_index INTEGER NOT NULL,
+  src_address TEXT NOT NULL, src_arg INTEGER NOT NULL, src_mods INTEGER NOT NULL,
+  tgt_kind INTEGER NOT NULL, tgt_object INTEGER NOT NULL, tgt_command TEXT NOT NULL,
+  tgt_label TEXT NOT NULL, tgt_sub INTEGER NOT NULL,
+  in_min REAL NOT NULL, in_max REAL NOT NULL, invert INTEGER NOT NULL,
+  out_min REAL NOT NULL, out_max REAL NOT NULL,
+  curve INTEGER NOT NULL, mode INTEGER NOT NULL, takeover INTEGER NOT NULL,
+  deadband REAL NOT NULL, smoothing REAL NOT NULL, feedback INTEGER NOT NULL,
+  edge INTEGER NOT NULL, threshold REAL NOT NULL, hysteresis REAL NOT NULL,
+  rel_scale REAL NOT NULL, toggle_state INTEGER NOT NULL,
+  FOREIGN KEY(set_uid) REFERENCES binding_set(uid) ON DELETE CASCADE);
+
 CREATE INDEX IF NOT EXISTS ix_cue_seq ON cue(seq_uid, idx);
 CREATE INDEX IF NOT EXISTS ix_lib_chan ON library_channel(library_uid, mode_ord, ord);
 CREATE INDEX IF NOT EXISTS ix_preset_pool ON preset(pool, pid);
@@ -1146,6 +1167,76 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
         }
     }
 
+    // --- binding sets (§12.6) ---------------------------------------------
+    {
+        Stmt bs(db, "INSERT INTO binding_set(uid,bid,name,enabled,page,ord) "
+                    "VALUES(?,?,?,?,?,?)");
+        Stmt bn(db, "INSERT INTO binding(uid,set_uid,bid,label,enabled,ord,src_kind,"
+                    "src_channel,src_index,src_address,src_arg,src_mods,tgt_kind,"
+                    "tgt_object,tgt_command,tgt_label,tgt_sub,in_min,in_max,invert,"
+                    "out_min,out_max,curve,mode,takeover,deadband,smoothing,feedback,"
+                    "edge,threshold,hysteresis,rel_scale,toggle_state) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+                    "?,?,?,?)");
+        if (!bs.valid() || !bn.valid()) return fail("prepare bindings");
+
+        int ord = 0;
+        for (const BindingSet& s : eng.bindings.sets()) {
+            bs.reset();
+            bs.bindUid(1, s.uid)
+              .bind(2, s.id)
+              .bind(3, s.name)
+              .bind(4, s.enabled ? 1 : 0)
+              .bind(5, s.page)
+              .bind(6, ord++);
+            if (!bs.run()) return fail("write binding set");
+            ++rep.bindingSets;
+
+            int bi = 0;
+            for (const Binding& b : s.bindings) {
+                bn.reset();
+                bn.bindUid(1, b.uid)
+                  .bindUid(2, s.uid)
+                  .bind(3, b.id)
+                  .bind(4, b.label)
+                  .bind(5, b.enabled ? 1 : 0)
+                  .bind(6, bi++)
+                  .bind(7, static_cast<int>(b.source.kind))
+                  .bind(8, b.source.channel)
+                  .bind(9, b.source.index)
+                  .bind(10, b.source.address)
+                  .bind(11, b.source.argIndex)
+                  .bind(12, static_cast<int>(b.source.mods))
+                  .bind(13, static_cast<int>(b.target.kind))
+                  .bindUid(14, b.target.object)
+                  .bind(15, b.target.command)
+                  .bind(16, b.target.label)
+                  .bind(17, b.target.subIndex)
+                  .bind(18, static_cast<double>(b.map.inMin))
+                  .bind(19, static_cast<double>(b.map.inMax))
+                  .bind(20, b.map.invert ? 1 : 0)
+                  .bind(21, static_cast<double>(b.map.outMin))
+                  .bind(22, static_cast<double>(b.map.outMax))
+                  .bind(23, static_cast<int>(b.map.curve))
+                  .bind(24, static_cast<int>(b.map.mode))
+                  .bind(25, static_cast<int>(b.map.takeover))
+                  .bind(26, static_cast<double>(b.map.deadband))
+                  .bind(27, static_cast<double>(b.map.smoothing))
+                  .bind(28, b.map.feedback ? 1 : 0)
+                  .bind(29, static_cast<int>(b.map.edge))
+                  .bind(30, static_cast<double>(b.map.threshold))
+                  .bind(31, static_cast<double>(b.map.hysteresis))
+                  .bind(32, static_cast<double>(b.map.relativeScale))
+                  // The toggle's state is the state of the thing it controls,
+                  // so it belongs in the show; takeover state does not — a
+                  // reloaded show has not had its faders touched yet.
+                  .bind(33, b.toggleState ? 1 : 0);
+                if (!bn.run()) return fail("write binding");
+                ++rep.bindings;
+            }
+        }
+    }
+
     if (!db.exec("COMMIT")) return fail("commit");
     db.close();
 
@@ -1841,7 +1932,76 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
         }
     }
 
+    // --- binding sets -----------------------------------------------------
+    BindingStore bindings(eng.uids);
+    {
+        Stmt bs(db, "SELECT uid,bid,name,enabled,page FROM binding_set ORDER BY ord");
+        if (bs.valid()) {
+            while (bs.step()) {
+                BindingSet s;
+                s.uid = bs.uid(0);
+                s.id = bs.i32(1);
+                s.name = bs.text(2);
+                s.enabled = bs.i32(3) != 0;
+                s.page = bs.i32(4);
+                eng.uids.observe(s.uid);
+
+                Stmt bn(db, "SELECT uid,bid,label,enabled,src_kind,src_channel,"
+                            "src_index,src_address,src_arg,src_mods,tgt_kind,tgt_object,"
+                            "tgt_command,tgt_label,tgt_sub,in_min,in_max,invert,out_min,"
+                            "out_max,curve,mode,takeover,deadband,smoothing,feedback,"
+                            "edge,threshold,hysteresis,rel_scale,toggle_state FROM "
+                            "binding WHERE set_uid=? ORDER BY ord");
+                bn.bindUid(1, s.uid);
+                while (bn.step()) {
+                    Binding b;
+                    b.uid = bn.uid(0);
+                    b.id = bn.i32(1);
+                    b.label = bn.text(2);
+                    b.enabled = bn.i32(3) != 0;
+                    b.source.kind = static_cast<SourceKind>(bn.i32(4));
+                    b.source.channel = bn.i32(5);
+                    b.source.index = bn.i32(6);
+                    b.source.address = bn.text(7);
+                    b.source.argIndex = bn.i32(8);
+                    b.source.mods = static_cast<Mods>(bn.i32(9));
+                    b.target.kind = static_cast<TargetKind>(bn.i32(10));
+                    b.target.object = bn.uid(11);
+                    b.target.command = bn.text(12);
+                    b.target.label = bn.text(13);
+                    b.target.subIndex = bn.i32(14);
+                    b.map.inMin = static_cast<float>(bn.dbl(15));
+                    b.map.inMax = static_cast<float>(bn.dbl(16));
+                    b.map.invert = bn.i32(17) != 0;
+                    b.map.outMin = static_cast<float>(bn.dbl(18));
+                    b.map.outMax = static_cast<float>(bn.dbl(19));
+                    b.map.curve = static_cast<BindCurve>(bn.i32(20));
+                    b.map.mode = static_cast<BindMode>(bn.i32(21));
+                    b.map.takeover = static_cast<Takeover>(bn.i32(22));
+                    b.map.deadband = static_cast<float>(bn.dbl(23));
+                    b.map.smoothing = static_cast<float>(bn.dbl(24));
+                    b.map.feedback = bn.i32(25) != 0;
+                    b.map.edge = static_cast<ThresholdEdge>(bn.i32(26));
+                    b.map.threshold = static_cast<float>(bn.dbl(27));
+                    b.map.hysteresis = static_cast<float>(bn.dbl(28));
+                    b.map.relativeScale = static_cast<float>(bn.dbl(29));
+                    b.toggleState = bn.i32(30) != 0;
+                    // Takeover state is deliberately NOT restored: a reloaded
+                    // show has not had its faders touched, so nothing is
+                    // caught until it is.
+                    s.bindings.push_back(std::move(b));
+                    ++rep.bindings;
+                }
+                bindings.restoreSet(std::move(s));
+                ++rep.bindingSets;
+            }
+        } else {
+            rep.warnings.push_back("file has no binding sets");
+        }
+    }
+
     // Everything read without error: now swap it in.
+    eng.bindings = std::move(bindings);
     eng.library = std::move(library);
     eng.groups = std::move(groups);
     eng.presets = std::move(presets);

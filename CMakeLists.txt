@@ -32,6 +32,7 @@ add_library(lumen_core
   src/Gdtf.cpp
   src/FixtureEditor.cpp
   src/Library.cpp
+  src/Binding.cpp
   src/Mvr.cpp
   src/Output.cpp
 )
@@ -136,5 +137,11 @@ target_link_libraries(test_library PRIVATE lumen_core SQLite::SQLite3)
 target_include_directories(test_library PRIVATE tests)
 target_compile_options(test_library PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME library COMMAND test_library)
+
+add_executable(test_binding tests/test_binding.cpp)
+target_link_libraries(test_binding PRIVATE lumen_core SQLite::SQLite3)
+target_include_directories(test_binding PRIVATE tests)
+target_compile_options(test_binding PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME binding COMMAND test_binding)
 
 

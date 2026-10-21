@@ -356,8 +356,63 @@ void Engine::applyRetention(const OutputLayer& playbacks, const ValueLayer& prog
     for (AttrKey k : stillHeld) lastProgrammerKeys_.push_back(k);
 }
 
+float Engine::bindingValue(const BindTarget& t) const {
+    // The engine answers for what it actually owns; anything else belongs to
+    // the layer above, which can supply it.
+    switch (t.kind) {
+        case TargetKind::Master:
+            // subIndex 0 is the grand master; anything else is a playback's.
+            if (t.subIndex == 0) return grandMaster;
+            for (const Executor& e : executors)
+                if (e.id == t.subIndex) return e.master;
+            break;
+        case TargetKind::Executor:
+            for (const Executor& e : executors)
+                if (e.id == t.subIndex) return e.master;
+            break;
+        default:
+            break;
+    }
+    if (externalValue) return externalValue(t);
+    return 0.f;
+}
+
+int Engine::drainInputs() {
+    const std::vector<InputEvent> events = inputs.drain();
+    int acted = 0;
+    for (const InputEvent& e : events) {
+        for (Binding* b : bindings.resolve(e)) {
+            const Applied a = applyInput(*b, e, bindingValue(b->target));
+            if (!a.hasValue && !a.fire) continue;
+
+            // What the engine owns, it applies itself; everything else is
+            // handed up, because a Command target needs the command layer.
+            bool handled = false;
+            if (b->target.kind == TargetKind::Master && a.hasValue) {
+                if (b->target.subIndex == 0) {
+                    grandMaster = clamp01(a.value);
+                    handled = true;
+                } else {
+                    for (Executor& x : executors)
+                        if (x.id == b->target.subIndex) {
+                            x.master = clamp01(a.value);
+                            handled = true;
+                        }
+                }
+            }
+            if (!handled) pendingActions.push_back({b->uid, b->target, a});
+            ++acted;
+        }
+    }
+    return acted;
+}
+
 void Engine::tick() {
     const double t = now();
+
+    // §12.7: inputs are drained HERE, at the top of the control-thread pass,
+    // not on the output thread.
+    drainInputs();
 
     applySwapGroups(t);
 

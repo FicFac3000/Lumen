@@ -83,9 +83,16 @@ struct Result {
 
 class CommandRegistry;
 
+class Console;
+
 struct Context {
     Engine& engine;
     CommandRegistry& registry;
+    // The console that dispatched this command, for the handful of commands
+    // that need session state rather than show state — Learn's focus, for
+    // instance, belongs to the operator's current act of mapping, not to the
+    // show. Null when a command is invoked without one.
+    Console* console = nullptr;
     std::vector<Target> targets;  // from the selector clause, if any
     std::vector<Arg> args;
     Privilege granted = Privilege::Operator;
@@ -169,6 +176,23 @@ public:
 
     const std::vector<std::string>& history() const { return history_; }
 
+    // Learn lives here rather than on the engine: binding a target means
+    // naming a command for it, and the command layer is the only thing that
+    // knows what is typeable (§12.2, §16.2).
+    Learn& learn() { return learn_; }
+    const Learn& learn() const { return learn_; }
+
+    // Acts on what the engine's input drain produced. The engine resolves and
+    // maps; this runs the commands, because a Command target is the general
+    // escape hatch and only the command layer can fire one (§12.2).
+    struct Pumped {
+        int actions = 0;
+        int executed = 0;
+        int failed = 0;
+        std::vector<std::string> messages;
+    };
+    Pumped pumpBindings();
+
 private:
     void installBuiltins();
 
@@ -176,6 +200,7 @@ private:
     CommandRegistry registry_;
     Privilege granted_ = Privilege::Operator;
     std::vector<std::string> history_;
+    Learn learn_{engine_.bindings};
 };
 
 } // namespace lumen

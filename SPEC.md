@@ -2144,6 +2144,14 @@ window.
 2. Every bindable target highlights; bound ones show their source as a badge
    (`CC 7`, `/lumen/exec/1`, `U2.14`).
 3. Focus a target, send the input. Bound.
+   - `[done]` Learn pins the MIDI channel it saw — it has to, or a
+     two-channel controller's CC 7 collides with itself — but the badge shows
+     the channel only when it is not channel 1, so the common case reads
+     "CC 7" rather than "CC 7 ch1".
+   - `[done]` Re-learning the same target MOVES its binding rather than
+     stacking a second one. The same input on a DIFFERENT target warns and
+     names what it would join; allowed on confirm, since one input driving
+     several things is sometimes the point.
 4. `[want]` **Learn next** auto-advances to the adjacent target, so mapping
    eight faders is eight fader moves rather than eight separate operations.
 5. `[want]` Unlearn from the same radial, and `Learn Clear` for a whole set.
@@ -2189,6 +2197,19 @@ Per binding, because a fader and a trigger need different handling:
 | Mode | absolute · relative (endless encoders) · toggle · momentary · trigger |
 | Deadband / smoothing | for noisy DMX or analogue input |
 | Feedback | off · on (send value back) |
+
+`[done]` **Catch is the implemented default**, and a control in catch mode
+reports which direction to move. Crossing the held value in a single jump
+counts as catching, so a fader flicked past the value does not stay dead
+because no event landed exactly on it; a fader already parked on the value is
+already in control. Takeover state resets when the page changes or a set
+activates, because a fader caught on the outgoing page has not been caught on
+the incoming one. It is deliberately NOT persisted: a reloaded show has not
+had its faders touched.
+
+`[done]` **Scale** anchors on the first touch and changes nothing by itself,
+then maps the control's remaining travel to the remaining range in whichever
+direction it moves — reversible, and it reaches both ends exactly.
 
 **`[flag]` Fader takeover is the real problem here.** If software holds 50% and
 the physical fader sits at 0%, touching it snaps the value. Three modes needed,
@@ -3592,8 +3613,15 @@ Outcome: usable on a real rig.
 
 ### M5 — Bindings and I/O
 
-- Learn, binding sets, layering, feedback (§12)
-- MIDI, OSC, DMX in with source arbitration (§18.3, §18.6)
+- Learn, binding sets, layering (§12) — **built**: sources, targets, mapping,
+  the three takeover modes, conflict detection, the input queue, and sets
+  persisted in the show
+- Feedback sends (§12.5) — needs a transport to send on
+- MIDI, OSC and DMX-in **transports** (§18.6) — the sockets and ports. The
+  binding layer above them is done and takes normalised events, so each
+  transport is a thin edge that pushes onto the input queue
+- DMX-in source arbitration (§18.3) — per-source priority, tie-break, source
+  tracking, timeout and failover
 - Timecode (§18.5)
 - Device profiles, hardware surfaces (§19)
 
@@ -3696,6 +3724,8 @@ Engine and show model, with the command layer as the only mutation path:
 | Fixture library, packages kept verbatim | §1.4.1 | built |
 | GDTF export, MVR export | §1.4, §17.5 | built |
 | ZIP writer | — | built |
+| Bindings, Learn, layering, takeover | §12 | built |
+| Input queue off the output thread | §12.7 | built |
 
 Not started: rendering (§2 needs a display), bindings and I/O (§12, §18, §19),
 pixel and video (§13), laser (§14), session networking (§18.7), plugins and the
