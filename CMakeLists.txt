@@ -27,6 +27,9 @@ add_library(lumen_core
   src/Preset.cpp
   src/Recipe.cpp
   src/Group.cpp
+  src/Xml.cpp
+  src/Zip.cpp
+  src/Gdtf.cpp
   src/Output.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
@@ -34,7 +37,10 @@ target_compile_options(lumen_core PRIVATE -Wall -Wextra -Wpedantic)
 
 find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
-target_link_libraries(lumen_core PUBLIC Threads::Threads SQLite::SQLite3)
+find_package(EXPAT REQUIRED)
+find_package(ZLIB REQUIRED)
+target_link_libraries(lumen_core PUBLIC Threads::Threads SQLite::SQLite3
+                      EXPAT::EXPAT ZLIB::ZLIB)
 
 enable_testing()
 
@@ -103,5 +109,11 @@ target_link_libraries(test_group PRIVATE lumen_core)
 target_include_directories(test_group PRIVATE tests)
 target_compile_options(test_group PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME group COMMAND test_group)
+
+add_executable(test_gdtf tests/test_gdtf.cpp)
+target_link_libraries(test_gdtf PRIVATE lumen_core)
+target_include_directories(test_gdtf PRIVATE tests)
+target_compile_options(test_gdtf PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME gdtf COMMAND test_gdtf)
 
 
