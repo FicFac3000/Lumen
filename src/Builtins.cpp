@@ -11,6 +11,7 @@
 #include "lumen/Show.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 
 namespace lumen {
@@ -30,6 +31,25 @@ std::vector<Target> effectiveTargets(Context& ctx) {
 
 std::string plural(size_t n, const char* one, const char* many) {
     return std::to_string(n) + " " + (n == 1 ? one : many);
+}
+
+// Cue numbers are decimals but almost always whole ones. `std::to_string`
+// would report cue 4 as "4.000000", which looks like a bug to the operator
+// reading the command line.
+std::string cueNumber(double v) {
+    std::ostringstream o;
+    const double r = std::round(v * 1000.0) / 1000.0;
+    if (r == std::floor(r)) o << static_cast<long long>(r);
+    else {
+        o.setf(std::ios::fixed);
+        o.precision(3);
+        o << r;
+        std::string s = o.str();
+        while (s.size() > 1 && s.back() == '0') s.pop_back();
+        if (!s.empty() && s.back() == '.') s.pop_back();
+        return s;
+    }
+    return o.str();
 }
 
 } // namespace
@@ -71,6 +91,86 @@ void Console::installBuiltins() {
             return Result::good(std::string(attrName(attr)) + " at " +
                                 std::to_string(static_cast<int>(v->number)) + "% on " +
                                 plural(targets.size(), "fixture", "fixtures"));
+        }});
+
+    // --------------------------------------------------------------- preset
+    registry_.add({
+        "Preset", {"pre"},
+        {{"which", ParamType::String, true, "pool.id, or a preset name"}},
+        Privilege::Operator, false, true,
+        "Applies a preset to the selection as a live reference (SPEC 11.8). "
+        "`Preset 1.3`, `Preset Red`, `Fixture 1 Thru 4 Preset \"Warm\"`.",
+        [](Context& ctx) -> Result {
+            const auto targets = effectiveTargets(ctx);
+            if (targets.empty()) return Result::bad("nothing selected");
+
+            const Arg* a = ctx.arg(0);
+            if (!a) return Result::bad("expected a preset");
+
+            auto& store = ctx.engine.presets;
+            const Preset* found = nullptr;
+
+            // `1.3` is pool 1, preset 3 — the same dotted form consoles use,
+            // and the same one the tokeniser already reads for fixture cells.
+            const size_t dot = a->raw.find('.');
+            if (a->isNumber && dot != std::string::npos) {
+                const int poolId = std::atoi(a->raw.substr(0, dot).c_str());
+                const int presetId = std::atoi(a->raw.substr(dot + 1).c_str());
+                const PresetPool* pool = store.pool(poolId);
+                if (!pool) return Result::bad("no preset pool " + std::to_string(poolId));
+                found = pool->byId(presetId);
+                if (!found)
+                    return Result::bad("pool " + std::to_string(poolId) + " (" + pool->name +
+                                       ") has no preset " + std::to_string(presetId));
+            } else if (a->isNumber) {
+                return Result::bad("which pool? use pool.id, as in `Preset 1." + a->raw + "`");
+            } else {
+                // By name. §8.2: a bare name resolves only when exactly one
+                // pool holds it, and a collision says which pools matched
+                // rather than picking one.
+                const PresetStore::NameLookup look = store.findByName(a->raw);
+                if (look.ambiguous()) {
+                    Result r = Result::bad("\"" + a->raw + "\" exists in " +
+                                           std::to_string(look.ambiguousPools.size()) +
+                                           " pools — say which");
+                    for (int p : look.ambiguousPools) {
+                        const PresetPool* pool = store.pool(p);
+                        r.rows.push_back(std::to_string(p) + " " +
+                                         (pool ? pool->name : std::string("?")));
+                    }
+                    return r;
+                }
+                found = look.preset;
+                if (!found) return Result::bad("no preset named \"" + a->raw + "\"");
+            }
+
+            auto& prog = ctx.engine.programmer;
+            const std::string what = "Preset " + found->name;
+            ProgrammerEdit undo(ctx.engine, what);
+            prog.selection().set(targets);
+            const Programmer::PresetApply applied = prog.applyPreset(store, *found);
+            undo.commit(ctx.engine.history, ctx.engine);
+            ctx.engine.actionLog.add(what, "programmer", ctx.source, ctx.prompt);
+
+            if (applied.written == 0)
+                return Result::bad("\"" + found->name +
+                                   "\" has nothing for the selected fixture(s)");
+
+            std::ostringstream msg;
+            msg << found->name << " on " << plural(targets.size(), "fixture", "fixtures");
+            if (!applied.attrs.empty()) {
+                msg << " (";
+                for (size_t k = 0; k < applied.attrs.size(); ++k)
+                    msg << (k ? ", " : "") << attrName(applied.attrs[k]);
+                msg << ")";
+            }
+            Result r = Result::good(msg.str());
+            // A partial apply is reported, not hidden: "it half worked" is the
+            // answer most likely to be a patching mistake.
+            if (applied.skipped > 0)
+                r.rows.push_back(std::to_string(applied.skipped) +
+                                 " value(s) skipped — the preset says nothing for those");
+            return r;
         }});
 
     // ---------------------------------------------------------------- clear
@@ -214,7 +314,7 @@ void Console::installBuiltins() {
             const int existing = seq.indexOfNumber(number);
             if (existing >= 0) {
                 seq.cues[static_cast<size_t>(existing)].values().overwriteFrom(layer);
-                return Result::good("merged into cue " + std::to_string(number));
+                return Result::good("merged into cue " + cueNumber(number));
             }
             Cue c;
             c.uid = ctx.engine.uids.next();
@@ -222,7 +322,7 @@ void Console::installBuiltins() {
             c.values() = layer;
             for (const Phaser& ph : ctx.engine.programmer.phasers()) c.phasers.push_back(ph);
             seq.cues.push_back(std::move(c));
-            return Result::good("stored cue " + std::to_string(number) + " in sequence " +
+            return Result::good("stored cue " + cueNumber(number) + " in sequence " +
                                 std::to_string(seqId) + " (" +
                                 plural(layer.size(), "value", "values") + ")");
         }});
@@ -290,9 +390,9 @@ void Console::installBuiltins() {
             const Sequence* s = ctx.engine.sequence(e->sequenceId);
             if (!s) return Result::bad("executor has no sequence");
             const int idx = s->indexOfNumber(num);
-            if (idx < 0) return Result::bad("no cue " + std::to_string(num));
+            if (idx < 0) return Result::bad("no cue " + cueNumber(num));
             e->gotoCue(*s, ctx.engine.patch, idx, ctx.engine.now());
-            return Result::good("exec " + std::to_string(id) + " at cue " + std::to_string(num));
+            return Result::good("exec " + std::to_string(id) + " at cue " + cueNumber(num));
         }});
 
     registry_.add({

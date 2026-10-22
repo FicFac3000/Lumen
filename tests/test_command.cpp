@@ -435,6 +435,122 @@ static void testSelectionOrderPreserved() {
     for (size_t i = 0; i < a.size(); ++i) CHECK_EQ(a[i].fixture, b[i].fixture);
 }
 
+// A selection can start from a group as well as from fixture numbers, and a
+// preset can be applied — both are command grammar, because §16.2 means the
+// UI has no other way to do either.
+void testGroupSelector() {
+    Desk d;
+
+    GroupDef wash;
+    wash.id = 1;
+    wash.name = "Front Wash";
+    wash.members = {{1, 0}, {2, 0}, {3, 0}, {4, 0}};
+    d.eng.groups.add(wash);
+
+    GroupDef odds;
+    odds.id = 2;
+    odds.name = "Odds";
+    odds.members = {{5, 0}, {7, 0}};
+    d.eng.groups.add(odds);
+
+    // A bare group selector is a selection in its own right.
+    CHECK(d.run("Group 1").ok);
+    CHECK_EQ(d.eng.programmer.selection().size(), size_t(4));
+
+    // Several groups, in typing order, each kept as a group: §20.8's tree is
+    // what multi-level fan needs, so selecting two groups must not flatten.
+    CHECK(d.run("Group 1 + 2").ok);
+    CHECK_EQ(d.eng.programmer.selection().size(), size_t(6));
+    CHECK_EQ(d.eng.programmer.selection().roots().size(), size_t(2));
+    CHECK(d.eng.programmer.selection().roots()[0].type == SelNode::Type::Group);
+
+    // A command after the selector operates on it.
+    CHECK(d.run("Group 1 At 50").ok);
+    CHECK_NEAR(d.out(1, Attr::Dimmer), 0.5f);
+    CHECK_NEAR(d.out(4, Attr::Dimmer), 0.5f);
+    CHECK(d.out(5, Attr::Dimmer) <= 0.f);
+
+    // Abbreviations, because nobody types the long word on a show.
+    CHECK(d.run("g 2").ok);
+    CHECK_EQ(d.eng.programmer.selection().size(), size_t(2));
+
+    // A group that is not there is named, not silently ignored.
+    const Result miss = d.run("Group 9");
+    CHECK(!miss.ok);
+    CHECK(miss.parsed);
+    CHECK(miss.message.find("9") != std::string::npos);
+
+    // An empty group is refused rather than quietly selecting nothing, which
+    // would look like the command worked.
+    GroupDef empty;
+    empty.id = 3;
+    empty.name = "Nothing";
+    d.eng.groups.add(empty);
+    CHECK(!d.run("Group 3").ok);
+}
+
+void testPresetThroughCommands() {
+    Desk d;
+
+    Preset red;
+    red.id = 1;
+    red.name = "Red";
+    red.group = Group::Color;
+    // Fixture 0 is the wildcard: one palette for the whole rig (§7.1).
+    red.values.set(0, 0, Attr::Red, Value::hard(1.f));
+    red.values.set(0, 0, Attr::Green, Value::hard(0.f));
+    red.values.set(0, 0, Attr::Blue, Value::hard(0.f));
+    d.eng.presets.ensurePool(1, "Colour", Group::Color);
+    const Preset& stored = d.eng.presets.add(1, red);
+
+    Preset pos;
+    pos.id = 1;
+    pos.name = "Home";
+    pos.group = Group::Position;
+    pos.values.set(0, 0, Attr::Pan, Value::hard(0.5f));
+    d.eng.presets.ensurePool(2, "Position", Group::Position);
+    d.eng.presets.add(2, pos);
+
+    // Dotted pool.id form.
+    CHECK(d.run("Fixture 1 Thru 4 Preset 1.1").ok);
+    CHECK_NEAR(d.out(1, Attr::Red), 1.f);
+    CHECK_NEAR(d.out(1, Attr::Green), 0.f);
+
+    // §11.8: it lands as a REFERENCE, so editing the preset moves every value
+    // that came from it. A copy would not.
+    const Value* v = d.eng.programmer.values().find(makeKey(1, 0, Attr::Red));
+    CHECK(v != nullptr);
+    CHECK(v && v->isRef());
+    CHECK(v && v->preset == stored.uid);
+
+    // By name, when exactly one pool holds it (§8.2).
+    CHECK(d.run("Fixture 5 Preset Red").ok);
+    CHECK_NEAR(d.out(5, Attr::Red), 1.f);
+
+    // A name nothing holds.
+    CHECK(!d.run("Fixture 1 Preset Nope").ok);
+
+    // A bare number cannot name a preset: which pool is a real question, and
+    // guessing would be worse than asking.
+    const Result bare = d.run("Fixture 1 Preset 1");
+    CHECK(!bare.ok);
+    CHECK(bare.message.find("pool") != std::string::npos);
+
+    // A position preset on fixtures with no pan is refused with a reason,
+    // rather than appearing to work.
+    const Result wrong = d.run("Fixture 1 Thru 4 Preset 2.1");
+    CHECK(!wrong.ok);
+
+    // Group selector and preset compose, which is the common console line.
+    GroupDef g;
+    g.id = 1;
+    g.name = "Wash";
+    g.members = {{6, 0}, {7, 0}};
+    d.eng.groups.add(g);
+    CHECK(d.run("Group 1 Preset 1.1").ok);
+    CHECK_NEAR(d.out(7, Attr::Red), 1.f);
+}
+
 int main() {
     std::printf("lumen command\n");
     testLexer();
@@ -450,5 +566,7 @@ int main() {
     testMetadataGeneratesEverything();
     testScripts();
     testSelectionOrderPreserved();
+    testGroupSelector();
+    testPresetThroughCommands();
     return check::report("command");
 }

@@ -57,6 +57,28 @@ void Programmer::setAttrFor(const Target& t, Attr a, float v) {
     values_.set(t.fixture, t.cell, a, Value::hard(v));
 }
 
+Programmer::PresetApply Programmer::applyPreset(const PresetStore& store, const Preset& p) {
+    PresetApply out;
+    for (Attr a : p.attributes()) {
+        bool landed = false;
+        for (const Target& t : resolveTargets(a)) {
+            const std::optional<float> v = store.resolve(p.uid, a, t.fixture, t.cell);
+            if (!v) {
+                // The preset has this attribute but nothing for this fixture:
+                // a fixture-specific palette applied to a fixture outside it.
+                // Skipped per fixture rather than failing the whole apply.
+                ++out.skipped;
+                continue;
+            }
+            values_.set(t.fixture, t.cell, a, Value::ref(p.uid, a, *v));
+            ++out.written;
+            landed = true;
+        }
+        if (landed) out.attrs.push_back(a);
+    }
+    return out;
+}
+
 void Programmer::setRef(Attr a, Uid preset, Attr within, float resolved) {
     for (const Target& t : resolveTargets(a))
         values_.set(t.fixture, t.cell, a, Value::ref(preset, within, resolved));

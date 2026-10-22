@@ -1,0 +1,336 @@
+/* Lumen console UI.
+ *
+ * Dark, dense, high-contrast: a lighting console is used in a dark room next
+ * to a stage, and every pixel of chrome is a pixel not showing the rig.
+ * Monospace for anything numeric so columns line up and a changing value does
+ * not shift its neighbours.
+ */
+
+:root {
+  --bg: #0b0d10;
+  --panel: #14171c;
+  --panel-2: #191d23;
+  --line: #262c35;
+  --line-soft: #1e232a;
+  --text: #dfe4ea;
+  --dim: #8b94a0;
+  --dimmer: #5c6470;
+  --accent: #ffb13b;      /* selection and focus */
+  --live: #3ddc84;        /* output present */
+  --warn: #ff6b5a;
+  --blue: #5aa9ff;
+  --violet: #b07cff;
+  --radius: 6px;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  height: 100vh;
+}
+
+/* ---------------------------------------------------------------- header */
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 14px;
+  height: 46px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 3px;
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.masters { display: flex; align-items: center; gap: 16px; }
+
+.master {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.master b { font: 600 12px var(--mono); color: var(--text); min-width: 28px; }
+
+input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 130px; height: 4px; border-radius: 2px;
+  background: var(--line); outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 18px; border-radius: 3px;
+  background: var(--accent); cursor: pointer;
+}
+input[type=range]::-moz-range-thumb {
+  width: 14px; height: 18px; border-radius: 3px; border: 0;
+  background: var(--accent); cursor: pointer;
+}
+
+.status {
+  margin-left: auto;
+  display: flex;
+  gap: 14px;
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+.link-ok { color: var(--live); }
+.link-bad { color: var(--warn); }
+
+button {
+  font: 500 12px system-ui, sans-serif;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 11px;
+  cursor: pointer;
+}
+button:hover { background: #222831; border-color: #36404c; }
+button:active { transform: translateY(1px); }
+button.danger { color: var(--warn); border-color: #3a2420; }
+button.danger.on { background: var(--warn); color: #190b09; border-color: var(--warn); }
+button.on { background: var(--accent); color: #241703; border-color: var(--accent); }
+
+/* ------------------------------------------------------------ window bar */
+/* §2.1: one hard button per main window, always visible. */
+#windowbar {
+  display: flex;
+  gap: 6px;
+  padding: 7px 14px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+#windowbar button {
+  white-space: nowrap;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 5px 10px;
+}
+
+/* ------------------------------------------------------------------ grid */
+/* §2.2: windows snap to a placement grid. */
+#grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.win {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* §2.4: every window carries the same header cluster. */
+.win > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--dim);
+  flex: 0 0 auto;
+}
+.win > header .sym { color: var(--accent); font-size: 12px; }
+.win > header .ctx { margin-left: auto; font: 10px var(--mono); color: var(--dimmer); text-transform: none; letter-spacing: 0; }
+.win > header .gear { cursor: pointer; opacity: 0.5; }
+.win > header .gear:hover { opacity: 1; }
+
+.body { overflow: auto; padding: 8px 9px; min-height: 0; flex: 1 1 auto; }
+.body.pad0 { padding: 0; }
+
+/* --------------------------------------------------------------- tables */
+table { width: 100%; border-collapse: collapse; font: 11px var(--mono); }
+th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--dimmer);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+td { padding: 3px 6px; border-bottom: 1px solid var(--line-soft); }
+tr.sel td { background: rgba(255, 177, 59, 0.1); }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: rgba(255, 255, 255, 0.04); }
+.num { text-align: right; }
+.muted { color: var(--dimmer); }
+
+/* A level, shown as a number over a bar: the number is exact, the bar is
+ * scannable, and the two never disagree. */
+.lvl { position: relative; display: block; min-width: 38px; padding-bottom: 3px; text-align: right; }
+.lvl::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 2px; background: var(--line); border-radius: 1px;
+}
+.lvl i {
+  position: absolute; left: 0; bottom: 0; height: 2px;
+  background: var(--live); border-radius: 1px;
+}
+.zero { color: var(--dimmer); }
+.zero::before { background: var(--line-soft); }
+
+/* --------------------------------------------------------------- tiles */
+/* §9: the executor surface. */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.tile {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 7px 8px;
+  cursor: pointer;
+  min-height: 62px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tile:hover { border-color: #3a4552; }
+.tile .t-name { font-size: 11px; font-weight: 600; }
+.tile .t-sub { font: 10px var(--mono); color: var(--dimmer); }
+.tile .t-bar { margin-top: auto; height: 3px; background: var(--line); border-radius: 2px; }
+.tile .t-bar i { display: block; height: 100%; background: var(--dim); border-radius: 2px; }
+.tile.live { border-color: var(--live); background: rgba(61, 220, 132, 0.09); }
+.tile.live .t-bar i { background: var(--live); }
+
+/* chips: presets, groups */
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip .c-sub { color: var(--dimmer); font: 10px var(--mono); margin-left: 5px; }
+
+/* --------------------------------------------------- DMX output monitor */
+.dmx { display: flex; flex-wrap: wrap; gap: 2px; }
+.cell {
+  width: 30px; height: 26px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  font: 9px/1 var(--mono);
+  color: var(--dimmer);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 1px;
+}
+.cell b { font-size: 10px; font-weight: 600; }
+.cell.hot { color: #0b0d10; }
+.uni-label { font: 10px var(--mono); color: var(--dim); margin: 6px 0 4px; }
+
+/* ---------------------------------------------------------- command bar */
+#cmdbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  height: 42px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.prompt { color: var(--accent); font: 600 14px var(--mono); }
+#cmd {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--text);
+  font: 13px var(--mono);
+}
+#cmd::placeholder { color: var(--dimmer); }
+#reply {
+  font: 11px var(--mono);
+  color: var(--dim);
+  max-width: 48%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#reply.bad { color: var(--warn); }
+#reply.good { color: var(--live); }
+
+/* ---------------------------------------------------------------- toast */
+#toast {
+  position: fixed;
+  right: 14px;
+  bottom: 54px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.toast {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font: 11px var(--mono);
+  max-width: 460px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+.toast.bad { border-left-color: var(--warn); color: #ffd9d4; }
+
+/* ------------------------------------------------------------ safety bar */
+/* §14.6 wants laser state visible, not buried. */
+.safety { display: flex; flex-direction: column; gap: 5px; }
+.zone {
+  display: flex; align-items: center; gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  font-size: 11px;
+}
+.zone .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dimmer); flex: 0 0 auto; }
+.zone.armed .dot { background: var(--live); box-shadow: 0 0 7px var(--live); }
+.zone.estop { border-color: var(--warn); }
+.zone.estop .dot { background: var(--warn); }
+.zone .z-reason { margin-left: auto; font: 10px var(--mono); color: var(--dimmer); }
+
+.empty { color: var(--dimmer); font-size: 11px; padding: 10px 2px; font-style: italic; }

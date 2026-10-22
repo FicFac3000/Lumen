@@ -2813,6 +2813,32 @@ scriptable, macro-able and headless.
   generates the parser, the Lua bindings, the agent's tool schema and the
   documentation. One source, four consumers.
 
+#### 16.2.1 What enforcement caught
+
+`[done-decision]` Building the browser console (§21.3) against this rule
+immediately found two operations with **no command form at all**: selecting a
+group, and applying a preset. Both existed in the model and both were reachable
+from nowhere.
+
+That is exactly the failure §16.2 predicts, and it is the argument for the rule
+in miniature: the gap was invisible for as long as nothing had to go through
+the front door. Each is now grammar:
+
+- **`Group <n>[ + <n>…]`** is a *selector clause*, the same shape as `Fixture`:
+  it may stand alone as a selection, or carry a command — `Group 1 At 50`.
+  Each group enters the selection **as a group**, not as its members flattened
+  in, because §20.8's tree is what multi-level fan reads. Abbreviates to `grp`
+  and `g`. A missing or empty group is named and refused rather than quietly
+  selecting nothing, which would look like it worked.
+- **`Preset <pool>.<id>`**, or `Preset <name>` when exactly one pool holds that
+  name (§8.2 — a collision lists the pools rather than guessing). It applies as
+  a **reference, not a copy** (§11.8), resolved per fixture so a palette with
+  fixture-specific entries and a generic wildcard behaves as one object. A bare
+  number is refused: "which pool" is a real question. A preset that says nothing
+  for the selected fixtures — a position palette on LED pars — is refused with
+  that reason, and a *partial* apply reports how many values were skipped,
+  because "it half worked" is usually a patching mistake worth seeing.
+
 ### 16.3 Introspection
 
 An agent or plugin cannot operate blind. A query API over the show model:
@@ -3799,7 +3825,54 @@ and channel-set detail §7.2 and §7.3 need, and the GDTF library is far larger
 than ChamSys's. The `.hed` path is about honouring an existing ChamSys user's
 own edited library, not about fixture coverage.
 
-### 21.3 Built so far
+### 21.3 The testable build
+
+`[done-decision]` Everything above the hardware line runs today, with no
+hardware and no GUI toolchain, in three pieces:
+
+**`lumen-server`** — the real C++ engine with an HTTP server bound to
+**loopback only** (§18.9), serving a browser console. The UI is a web page
+purely because that is the one surface available on every machine with nothing
+to install; it is **not** the shipping renderer (§2 still wants a native one).
+
+The arrangement has a property worth keeping whatever the final renderer is:
+the browser *cannot* reach the model except by sending a command string, so
+§16.2 is enforced by the transport rather than by discipline. That is what
+exposed the two missing commands in §16.2.1 within an hour of starting.
+
+**`lumen-cli`** — the same engine from a terminal. Every console command is
+typeable; `.tick`, `.dmx` and `.help` are the only additions, and they are
+shell commands rather than console ones so the vocabularies never blur.
+
+**Simulated hardware** — `SimulatedOutput`, `SimulatedLaser` and
+`SimulatedInput` implement the same interfaces the real devices will. The
+laser simulation takes only a `GatedFrame`, so §14.6's safety gate applies to
+the simulation exactly as to a projector: there is no "test mode" that skips
+it, because there is no type that can skip it.
+
+What this deliberately leaves out, all of it *transport* rather than logic:
+MIDI and OSC sockets, Art-Net and sACN on the wire, and the laser DACs. The
+layers above each of them are built and tested; each needs a device plugged in
+to finish, not a design.
+
+#### 21.3.1 Developing with no display
+
+`[done-decision]` The workspace has no screen, which would normally make UI
+work unverifiable — the usual outcome being code that compiles and is never
+looked at. Headless Chromium plus Playwright solves it completely:
+
+- The page is rendered and screenshotted, and the image inspected directly.
+- It is also **driven**: clicking a group chip, dragging a fader, typing a
+  command, pressing blackout — each checked against the *engine's* state
+  afterwards rather than against the page, so a UI that looks right while
+  doing nothing fails the test.
+- JavaScript console errors and page errors are collected and treated as
+  failures.
+
+This is a test harness, not a workaround: a UI test that asserts against
+engine state is the right test whether or not anyone has a monitor.
+
+### 21.4 Built so far
 
 Engine and show model, with the command layer as the only mutation path:
 
@@ -3815,7 +3888,7 @@ Engine and show model, with the command layer as the only mutation path:
 | FX recipes, slots, role binding, parameter presets | §4.1–4.4, §4.17 | built |
 | Groups: static, nested, dynamic, overrides | §20.8 | built |
 | Spread sources and modifiers | §20.2–20.6 | built |
-| Window model, grid, panel sets, navigation | §2.2–2.8 | model only |
+| Window model, grid, panel sets, navigation | §2.2–2.8 | model + browser console |
 | Radial menu geometry and tree | §5 | model + prototype |
 | Show file, autosave, atomic save | §17.7, §17.8 | built |
 | Command layer, privileges, agent schema | §16.2, §16.5 | built |
@@ -3832,7 +3905,15 @@ Engine and show model, with the command layer as the only mutation path:
 | Timecode slots, drop-frame, triggers | §18.5 | built |
 | Laser safety gate, un-bypassable by type | §14.6 | built |
 | Laser point optimiser | §14.4 | built |
+| Group selector and preset application as grammar | §16.2.1 | built |
+| Simulated output, laser and input | §21.3 | built |
+| Local server and browser console | §21.3 | built |
+| Headless UI rendering and interaction tests | §21.3.1 | built |
 
-Not started: rendering (§2 needs a display), bindings and I/O (§12, §18, §19),
-pixel and video (§13), laser (§14), session networking (§18.7), plugins and the
-agent (§16.3, §16.4), 3D authoring (§17.4 stages 2–4).
+Not started, and each blocked on a device rather than a decision: MIDI and OSC
+transports, Art-Net and sACN on the wire (§18), laser DACs (§14.7), hardware
+surfaces (§19).
+
+Not started, and not blocked: pixel and video (§13), session networking
+(§18.7), Lua plugins and the agent (§16.3, §16.4), 3D authoring (§17.4
+stages 2–4), the native renderer (§2).

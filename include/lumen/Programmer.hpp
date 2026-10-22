@@ -7,6 +7,7 @@
 
 #include "lumen/Patch.hpp"
 #include "lumen/Phaser.hpp"
+#include "lumen/Preset.hpp"
 #include "lumen/Selection.hpp"
 #include "lumen/Value.hpp"
 
@@ -50,6 +51,19 @@ public:
     void setAttr(Attr a, float v);
     void setAttrFor(const Target& t, Attr a, float v);
     void setRef(Attr a, Uid preset, Attr within, float resolved);
+
+    // Applies a preset to the selection as a REFERENCE rather than a copy
+    // (§11.8): the programmer stores the preset's UID, so editing the preset
+    // afterwards moves every value that came from it. Resolution is per
+    // fixture, because a preset may carry fixture-specific values alongside
+    // the generic wildcard entry — which is how one "Red" serves a rig of
+    // mixed types.
+    struct PresetApply {
+        int written = 0;
+        int skipped = 0;            // selected but the preset says nothing for it
+        std::vector<Attr> attrs;    // attributes that actually landed
+    };
+    PresetApply applyPreset(const PresetStore& store, const Preset& p);
 
     const ValueLayer& values() const { return values_; }
     ValueLayer& values() { return values_; }

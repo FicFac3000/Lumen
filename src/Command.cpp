@@ -21,6 +21,14 @@ bool isSelectorWord(const std::string& w) {
     return k == "fixture" || k == "fix" || k == "f" || k == "channel" || k == "chan";
 }
 
+// `Group 3 At 50` is the other way a selection starts. It is a selector
+// clause, not a command, for the same reason `Fixture` is: whatever follows
+// then applies to it, and a bare one is a selection in its own right.
+bool isGroupSelectorWord(const std::string& w) {
+    const std::string k = lower(w);
+    return k == "group" || k == "grp" || k == "g";
+}
+
 std::string jsonEscape(const std::string& s) {
     std::string o;
     for (char c : s) {
@@ -356,6 +364,39 @@ Result Console::execute(const std::string& line) {
             engine_.programmer.selection().set(targets);
             return Result::good("selected " + std::to_string(targets.size()) + " fixture(s)");
         }
+    } else if (tokens[i].kind == Token::Kind::Word && isGroupSelectorWord(tokens[i].text)) {
+        ++i;
+        std::vector<Target> ids;
+        std::string err;
+        if (!parseTargets(tokens, i, ids, err)) return Result::bad("expected a group number");
+
+        // Each group enters the selection AS A GROUP, not as its members
+        // flattened in. §20.8: the structure is what multi-level fan needs,
+        // so selecting two groups and fanning means "across the two, then
+        // within each" rather than "across everything".
+        Selection& sel = engine_.programmer.selection();
+        Selection built;
+        for (const Target& t : ids) {
+            GroupDef* g = engine_.groups.byId(static_cast<int>(t.fixture));
+            if (!g)
+                return Result::bad("no group " + std::to_string(t.fixture));
+            const GroupResolution res = engine_.groups.resolve(g->uid, engine_.patch);
+            if (res.targets.empty())
+                return Result::bad("group " + std::to_string(t.fixture) + " (" + g->name +
+                                   ") is empty");
+            built.addGroup(g->uid, g->name, res.targets);
+        }
+        targets = built.flatten();
+
+        if (tokens[i].kind == Token::Kind::End) {
+            sel = built;
+            return Result::good("selected " + std::to_string(targets.size()) +
+                                " fixture(s) from " + std::to_string(ids.size()) + " group(s)");
+        }
+        // With a command following, the selection is still set first: the
+        // command then operates on it exactly as if it had been typed as
+        // fixture numbers.
+        sel = built;
     }
 
     if (tokens[i].kind != Token::Kind::Word)

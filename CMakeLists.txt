@@ -39,6 +39,7 @@ add_library(lumen_core
   src/Input.cpp
   src/Timecode.cpp
   src/Laser.cpp
+  src/Simulated.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
 target_compile_options(lumen_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -167,3 +168,30 @@ target_compile_options(test_laser PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME laser COMMAND test_laser)
 
 
+
+# ---------------------------------------------------------------------------
+# Applications
+# ---------------------------------------------------------------------------
+# lumen-server: the engine with its interface in a browser. Everything that
+# needs hardware is simulated, so it runs anywhere.
+add_executable(lumen-server
+  apps/server/main.cpp
+  apps/server/Http.cpp
+  apps/server/Json.cpp
+)
+target_link_libraries(lumen-server PRIVATE lumen_core)
+target_include_directories(lumen-server PRIVATE apps/server)
+target_compile_options(lumen-server PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(lumen-server PRIVATE
+  LUMEN_WEB_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/web")
+
+# lumen-cli: the same engine, driven from the terminal.
+add_executable(lumen-cli apps/cli/main.cpp)
+target_link_libraries(lumen-cli PRIVATE lumen_core)
+target_compile_options(lumen-cli PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_server tests/test_server.cpp apps/server/Http.cpp apps/server/Json.cpp)
+target_link_libraries(test_server PRIVATE lumen_core)
+target_include_directories(test_server PRIVATE tests apps/server)
+target_compile_options(test_server PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME server COMMAND test_server)
