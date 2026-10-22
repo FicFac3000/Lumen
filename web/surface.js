@@ -1,30 +1,38 @@
 /* The executor surface, in both reference styles.
  *
  * §9 resolves the MA3/ChamSys question on paper — "flexibility in the canvas,
- * immediacy in the tile" — but that is a decision made in prose. This file
- * renders both styles from the SAME executor state so the decision can be
- * looked at instead of argued about.
+ * immediacy in the tile" — and §9.6 keeps BOTH. Keeping both only means
+ * something if the style belongs to a PAGE rather than to a preference: a
+ * show owns a busking wing and a programmed canvas at the same time, and
+ * moves between them.
  *
- * What differs between them is layout DISCIPLINE, not data and not features:
+ * So the engine owns the pages, this renders whichever one is current, and
+ * switching or converting is a command like everything else (§16.2).
  *
- *   ChamSys   a fixed matrix. Every tile identical, numbered, never moves.
- *             Pages of ten wings. You learn where things are by position and
- *             they are there forever. Rigid, and fast because of it.
+ * What differs between the two is layout DISCIPLINE, not data and not
+ * features:
  *
- *   MA3       free placement on a snapping grid. Tiles take the size they
- *             deserve, and render more detail as they get bigger (§9.2).
- *             Pages are whole layouts. Flexible, and slower to build.
+ *   wing      a fixed matrix. Every tile identical, numbered, never moves.
+ *             You learn where things are by position and they are there
+ *             forever. Rigid, and fast because of it.
  *
- * Both share one rule from §9.1: NO OVERLAP. On a busking surface overlapping
- * targets mean mis-presses, so the MA3 canvas enforces the one piece of
- * ChamSys rigidity worth keeping.
+ *   canvas    free placement on a snapping grid. Tiles take the size they
+ *             deserve and render more detail as they get bigger (§9.2).
+ *             Flexible, and slower to build.
+ *
+ * Both forbid overlap (§9.1): on a busking surface, overlapping targets mean
+ * mis-presses. The engine enforces that; a page that fails it came from a
+ * damaged file, and is shown rather than quietly rendered wrong.
  */
 
 /* --------------------------------------------------------------- shared */
 
 /* §9.2: legend and colour are a VIEW of the assigned object, never typed.
- * Colour comes from what the sequence drives, so the surface is readable
- * before anyone has configured anything. */
+ * The page stores a UID; this resolves it to whatever that object is now. */
+function tileExec(tile) {
+  return S.state.executors.find(e => e.id === tile.executor) || null;
+}
+
 function tileHue(x) {
   if (x.chase) return 'chase';
   const n = (x.sequenceName || x.label || '').toLowerCase();
@@ -39,7 +47,7 @@ function fmtRate(x) {
   return x.chase ? x.rate.toFixed(1).replace(/\.0$/, '') + ' Hz' : '';
 }
 
-/* The fader under a tile. Commands only, like everything else. */
+/* The fader strip on a tile. A command, like every other mutation. */
 function tileFader(x, tall) {
   const bar = el('div', 'x-fader' + (tall ? ' tall' : ''));
   const fill = el('i');
@@ -61,52 +69,41 @@ function wireTile(node, x) {
   node.title = (x.sequenceName || 'unassigned') + ' — click Go, right-click Off';
 }
 
-/* ----------------------------------------------------- ChamSys: the wing */
+/* ----------------------------------------------------------- the wing */
 /*
- * Ten columns, fixed. Every tile the same size whether it holds a one-cue
- * blinder or a forty-cue stack. Empty slots are DRAWN, not hidden, because on
- * a real wing the empty one is still a button under your thumb and muscle
- * memory needs the gaps to be where they will always be.
+ * Empty slots are DRAWN, not hidden: on a real wing the empty one is still a
+ * button under a thumb, and position being permanent is the entire bargain.
  */
-const WING_COLS = 10;
-const WING_ROWS = 2;
+function buildWing(body, page) {
+  const slots = page.cols * page.rows;
 
-function buildWing(body) {
-  const st = S.state;
-  const page = S.wingPage || 1;
-  const perPage = WING_COLS * WING_ROWS;
-  const first = (page - 1) * perPage + 1;
-
-  const pages = el('div', 'wing-pages');
-  for (let p = 1; p <= 4; ++p) {
-    const b = el('button', p === page ? 'on' : '', 'PAGE ' + p);
-    b.onclick = () => { S.wingPage = p; render(); };
-    pages.appendChild(b);
-  }
-  const hint = el('span', 'wing-hint', 'fixed 10 × 2 — a slot never moves');
-  pages.appendChild(hint);
-  body.appendChild(pages);
+  const bar = el('div', 'wing-pages');
+  const hint = el('span', 'wing-hint',
+    'fixed ' + page.cols + ' × ' + page.rows + ' — a slot never moves');
+  hint.style.marginLeft = '0';
+  bar.appendChild(hint);
+  body.appendChild(bar);
 
   const grid = el('div', 'wing');
-  for (let i = 0; i < perPage; ++i) {
-    const number = first + i;
-    const x = st.executors.find(e => e.id === number);
+  grid.style.gridTemplateColumns = 'repeat(' + page.cols + ', minmax(0, 1fr))';
+  for (let i = 0; i < slots; ++i) {
+    const tile = page.tiles.find(t => t.slot === i);
+    const x = tile ? tileExec(tile) : null;
     const cell = el('div', 'wing-cell' + (x ? '' : ' empty') +
                             (x && x.active ? ' live' : ''));
-    cell.appendChild(el('span', 'w-num', String(number)));
+    cell.appendChild(el('span', 'w-num', String(i + 1)));
 
     if (!x) {
-      // An unassigned slot still reads as a slot. ChamSys's whole bargain is
-      // that position is permanent, which only works if nothing reflows.
       grid.appendChild(cell);
       continue;
     }
 
     cell.dataset.hue = tileHue(x);
     wireTile(cell, x);
-    cell.appendChild(el('div', 'w-name', x.label));
+    cell.appendChild(el('div', 'w-name', tile.legend || x.label));
     cell.appendChild(el('div', 'w-sub',
-      x.active ? ('CUE ' + x.cue + '/' + x.cues) : (x.cues + ' CUE' + (x.cues === 1 ? '' : 'S'))));
+      x.active ? ('CUE ' + x.cue + '/' + x.cues)
+               : (x.cues + ' CUE' + (x.cues === 1 ? '' : 'S'))));
     if (x.chase) cell.appendChild(el('div', 'w-rate', fmtRate(x)));
     cell.appendChild(tileFader(x, false));
     grid.appendChild(cell);
@@ -123,59 +120,17 @@ function buildWing(body) {
   body.appendChild(row);
 }
 
-/* --------------------------------------------------- MA3: the free canvas */
+/* --------------------------------------------------------- the canvas */
 /*
- * Tiles take a grid rectangle and render at a detail level that depends on
- * the rectangle they were given (§9.2's density table). The layout below is
- * a default derived from the executors; in the real thing it is placed by
- * hand and travels with the show.
- *
- * The default deliberately makes the tiles DIFFERENT sizes, because that is
- * the whole claim of this style: a blinder is one big button, a cue stack
- * wants room for its state, and a low-state fader needs almost nothing.
+ * A tile renders at a detail level that follows the rectangle it was given
+ * (§9.2's density table). The cell size is fixed in pixels rather than
+ * fractional, because a tile placed at 3×2 has to be the same size on every
+ * screen or the layout stops travelling with the show.
  */
-const CANVAS_COLS = 12;
-
-function defaultPlacement(executors) {
-  // Size follows what the tile has to say: more cues and live state earn
-  // more room. This is the rule a user would otherwise apply by hand.
-  const out = [];
-  let col = 0, row = 0, rowH = 0;
-  for (const x of executors) {
-    let w = 2, h = 1;
-    if (x.cues >= 3) { w = 3; h = 2; }         // a stack: needs its state
-    else if (x.cues === 1 && /blind/i.test(x.label)) { w = 3; h = 2; }
-    else if (x.cues === 1) { w = 2; h = 1; }
-    if (col + w > CANVAS_COLS) { col = 0; row += rowH; rowH = 0; }
-    out.push({ x, col, row, w, h });
-    col += w;
-    rowH = Math.max(rowH, h);
-  }
-  return out;
-}
-
-/* §9.1: overlap is forbidden. The check is cheap and the failure it prevents
- * — two targets under one thumb — is not recoverable mid-show. */
-function overlaps(placed) {
-  for (let i = 0; i < placed.length; ++i)
-    for (let k = i + 1; k < placed.length; ++k) {
-      const a = placed[i], b = placed[k];
-      if (a.col < b.col + b.w && b.col < a.col + a.w &&
-          a.row < b.row + b.h && b.row < a.row + a.h)
-        return [a, b];
-    }
-  return null;
-}
-
-function buildCanvas(body) {
-  const st = S.state;
-
+function buildCanvas(body, page) {
   const bar = el('div', 'wing-pages');
-  for (const name of ['Show', 'Prep', 'Soundcheck']) {
-    const b = el('button', name === (S.layout || 'Show') ? 'on' : '', name.toUpperCase());
-    b.onclick = () => { S.layout = name; render(); };
-    bar.appendChild(b);
-  }
+  // §9.4: edit mode shows the grid, run mode hides it. Visible at a glance,
+  // never a hidden state.
   const edit = el('button', S.editMode ? 'on' : '', S.editMode ? 'EDIT' : 'RUN');
   edit.onclick = () => { S.editMode = !S.editMode; render(); };
   bar.appendChild(edit);
@@ -183,26 +138,23 @@ function buildCanvas(body) {
     'free placement, snapping grid — size sets detail'));
   body.appendChild(bar);
 
-  const placed = defaultPlacement(st.executors);
-  const clash = overlaps(placed);
-
-  // The cell size lives in CSS, not here: a layout placed at 3x2 has to be
-  // the same size on every screen or it stops travelling with the show.
   const canvas = el('div', 'canvas' + (S.editMode ? ' editing' : ''));
+  canvas.style.gridTemplateColumns = 'repeat(' + page.cols + ', 104px)';
 
-  for (const p of placed) {
-    const x = p.x;
+  for (const tile of page.tiles) {
+    const x = tileExec(tile);
+    if (!x) continue;
     const t = el('div', 'c-tile' + (x.active ? ' live' : ''));
     t.dataset.hue = tileHue(x);
-    t.style.gridColumn = (p.col + 1) + ' / span ' + p.w;
-    t.style.gridRow = (p.row + 1) + ' / span ' + p.h;
+    t.style.gridColumn = (tile.x + 1) + ' / span ' + tile.w;
+    t.style.gridRow = (tile.y + 1) + ' / span ' + tile.h;
     wireTile(t, x);
 
     // §9.2's density table, implemented rather than described.
-    const area = p.w * p.h;
+    const area = tile.w * tile.h;
     const head = el('div', 'c-head');
     head.appendChild(el('span', 'c-sym', x.chase ? '⟳' : '▶'));
-    if (p.w >= 2) head.appendChild(el('span', 'c-name', x.label));
+    if (tile.w >= 2) head.appendChild(el('span', 'c-name', tile.legend || x.label));
     t.appendChild(head);
 
     if (area >= 4) {
@@ -220,45 +172,74 @@ function buildCanvas(body) {
                 : ('next ' + (x.nextCue === null ? '—' : x.nextCue) +
                    ' · ' + (x.nextFade || 0).toFixed(1) + 's')));
     }
-    t.appendChild(tileFader(x, p.h > 1));
+    t.appendChild(tileFader(x, tile.h > 1));
     canvas.appendChild(t);
   }
   body.appendChild(canvas);
-
-  if (clash) {
-    body.appendChild(el('div', 'clash',
-      'Overlap refused: ' + clash[0].x.label + ' and ' + clash[1].x.label +
-      ' (§9.1 — overlapping targets mean mis-presses)'));
-  }
 }
 
-/* ------------------------------------------------------------- the switch */
+/* ------------------------------------------------------------- pages */
+function drawPage(body, page) {
+  if (page.style === 'canvas') buildCanvas(body, page);
+  else buildWing(body, page);
+  for (const problem of page.problems)
+    body.appendChild(el('div', 'clash', problem));
+}
+
+const STYLE_NOTE = {
+  wing: 'fixed matrix · position is permanent',
+  canvas: 'free placement · size sets detail',
+};
+
 function buildExecutorSurface(body) {
+  const st = S.state;
+  const pages = st.surfaces || [];
+  if (!pages.length) {
+    body.appendChild(el('div', 'empty', 'No surface pages. Try: Surface'));
+    return;
+  }
+
+  // One button per page. Keeping both styles means the show OWNS pages of
+  // each (§9.6), so this selects a page rather than setting a preference.
   const pick = el('div', 'style-pick');
-  for (const [key, label, note] of [
-    ['chamsys', 'ChamSys wing', 'fixed matrix · position is permanent'],
-    ['ma3', 'MA3 canvas', 'free placement · size sets detail'],
-    ['both', 'Side by side', 'same executors, both disciplines'],
-  ]) {
-    const b = el('button', S.surface === key ? 'on' : '', label);
-    b.title = note;
-    b.onclick = () => { S.surface = key; render(); };
+  for (const p of pages) {
+    const b = el('button', (!S.both && p.id === st.surface) ? 'on' : '',
+                 p.name + ' · ' + p.style);
+    b.title = STYLE_NOTE[p.style] || '';
+    b.onclick = () => { S.both = false; send('Surface ' + p.id); };
     pick.appendChild(b);
+  }
+  const both = el('button', S.both ? 'on' : '', 'Side by side');
+  both.title = 'every page at once, each in its own style';
+  both.onclick = () => { S.both = !S.both; render(); };
+  pick.appendChild(both);
+
+  // Converting is a command, and the lossy direction says what it costs
+  // before it costs it.
+  const current = pages.find(p => p.id === st.surface);
+  if (current && !S.both) {
+    const other = current.style === 'wing' ? 'canvas' : 'wing';
+    const conv = el('button', '', 'Make it a ' + other);
+    conv.title = other === 'wing'
+      ? 'lossy: tiles lose their size, and some may have nowhere to go'
+      : 'lossless: every slot is already a 1×1 cell';
+    conv.onclick = () => send('SurfaceStyle ' + other + ' ' + current.id);
+    conv.style.marginLeft = 'auto';
+    pick.appendChild(conv);
   }
   body.appendChild(pick);
 
-  if (S.surface === 'both') {
+  if (S.both) {
     const split = el('div', 'split');
-    const left = el('div', 'half');
-    left.appendChild(el('div', 'half-label', 'ChamSys — fixed wing'));
-    buildWing(left);
-    const right = el('div', 'half');
-    right.appendChild(el('div', 'half-label', 'MA3 — free canvas'));
-    buildCanvas(right);
-    split.append(left, right);
+    for (const p of pages) {
+      const half = el('div', 'half');
+      half.appendChild(el('div', 'half-label', p.name + ' — ' + p.style));
+      drawPage(half, p);
+      split.appendChild(half);
+    }
     body.appendChild(split);
     return;
   }
-  if (S.surface === 'ma3') buildCanvas(body);
-  else buildWing(body);
+
+  drawPage(body, current || pages[0]);
 }

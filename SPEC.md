@@ -1653,10 +1653,50 @@ What rendering both actually showed:
   only how much the operator is allowed to arrange, which is exactly the trade
   §9 names.
 
-`[open]` Which becomes the default is still open, and is a question about the
-*user*, not the software: the wing wins for busking a show you did not program,
-the canvas wins for a show you built and will run many times. Both staying is
-plausible — the cost is one layout model, which §9.1 already requires.
+`[done-decision]` **Both stay.** The style is therefore a property of a
+*page*, not a preference: a show owns a busking wing and a programmed canvas
+at once and moves between them, rather than having one answer imposed on every
+surface it owns. A global switch would have been cheaper and would have made
+the question come back every time someone wanted the other one for ten minutes.
+
+So a `Surface` is a named page with a style, a matrix size, and tiles; tiles
+store the assigned object's **UID** (§8.1), which is what makes the legend a
+view rather than a copy. Pages persist in the show file, because a show that
+forgets which of its surfaces was a wing has not kept both — it has kept one
+and guessed.
+
+### 9.7 Converting a page, and what it costs
+
+`[done-decision]` Keeping both forces an operation neither console needs: a
+page has to be convertible. It is **not symmetric**, and the asymmetry is the
+whole of the design:
+
+| Direction | Cost |
+|---|---|
+| wing → canvas | **lossless.** Every slot is already a 1×1 cell at the right position, so the canvas simply stops ignoring the rectangle. Nothing moves, nothing shrinks. |
+| canvas → wing | **lossy, two different ways.** A 3×2 tile cannot stay 3×2 in a fixed matrix, and two tiles whose rectangles begin in different cells can land in the same slot. |
+
+The two losses are counted separately because they are different kinds of bad:
+
+- **Resized** changes how a tile looks. Annoying, reversible by hand, and
+  therefore allowed without ceremony — nagging about it would train people to
+  dismiss the warning that matters.
+- **Displaced** means a tile has nowhere to be, and converting would delete it.
+  That is refused unless explicitly forced, with every affected tile named.
+  Losing a layout somebody arranged by hand is always a decision they made,
+  never one that happened to them.
+
+A consequence worth stating because it will surprise someone: **canvas → wing →
+canvas is not the identity.** The sizes are gone after the first leg, and
+coming back gives 1×1 tiles in the right places. There is no hidden copy of the
+old geometry, deliberately — a surface that silently remembered a shape it is
+no longer showing is a worse surprise than one that forgot.
+
+`[open]` Which page a *new show* starts on. Neither is obviously right, and it
+is a question about the user rather than the software: the wing wins for
+busking a show you did not program, the canvas for a show you built and will
+run many times. A starter show ships with one of each (`installStarterSurfaces`)
+and opens on the wing, which is reversible in one command.
 
 ---
 
@@ -3943,7 +3983,9 @@ Engine and show model, with the command layer as the only mutation path:
 | Laser safety gate, un-bypassable by type | §14.6 | built |
 | Laser point optimiser | §14.4 | built |
 | Group selector, preset and executor master as grammar | §16.2.1 | built |
-| Executor surface, both reference styles | §9.6 | built |
+| Executor surface, both styles, as pages | §9.6 | built |
+| Page style conversion, with a loss report | §9.7 | built |
+| Surfaces and tiles in the show file | §9.6, §17.7 | built |
 | Simulated output, laser and input | §21.3 | built |
 | Local server and browser console | §21.3 | built |
 | Headless UI rendering and interaction tests | §21.3.1 | built |

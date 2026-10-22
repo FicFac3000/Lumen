@@ -19,10 +19,8 @@ const S = {
   history: [],
   historyAt: -1,
   connected: false,
-  surface: 'chamsys',   // §9: which executor style is on show
-  wingPage: 1,
-  layout: 'Show',
-  editMode: false,
+  both: false,          // §9.6: show every surface page at once
+  editMode: false,      // §9.4: edit mode vs run mode, per surface
 };
 
 /* ------------------------------------------------------------------ net */
@@ -403,8 +401,11 @@ function render() {
     if (!spec) continue;
     let ctx = '';
     if (name === 'Fixtures') ctx = st.programmer.selection.length + ' selected';
-    if (name === 'Executors') ctx = S.surface === 'both' ? 'both styles'
-      : (S.surface === 'ma3' ? 'MA3 canvas' : 'ChamSys wing');
+    if (name === 'Executors') {
+      const p = (st.surfaces || []).find(x => x.id === st.surface);
+      ctx = S.both ? (st.surfaces || []).length + ' pages'
+                   : (p ? p.name + ' · ' + p.style : 'no page');
+    }
     if (name === 'Output') ctx = st.universes.length + ' universes';
     if (name === 'History') ctx = st.canUndo ? 'undo available' : 'nothing to undo';
     grid.appendChild(win(name, spec.sym, ctx, spec.build, spec.span, spec.rows));

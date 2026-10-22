@@ -15,7 +15,9 @@
 #include "lumen/Laser.hpp"
 #include "lumen/Show.hpp"
 #include "lumen/Simulated.hpp"
+#include "lumen/Surface.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -218,6 +220,32 @@ void buildDemoShow(Session& s) {
     if (Executor* x = e.executor(4)) x->master = 1.0f;
     if (Executor* x = e.executor(6)) x->master = 0.4f;
 
+    // Two surface pages, one of each style (§9.6): keeping both means a show
+    // owns pages of each, not a global preference.
+    installStarterSurfaces(e.surfaces);
+    for (int id = 1; id <= 6; ++id)
+        if (const Executor* x = e.executor(id))
+            e.surfaces.placeInSlot(1, id - 1, TileKind::Executor, x->uid);
+
+    // The canvas page gets the same six, placed by size: a cue stack needs
+    // room for its state, a blinder wants to be one big button (§9.2).
+    {
+        int col = 0, row = 0, rowH = 0;
+        for (int id = 1; id <= 6; ++id) {
+            const Executor* x = e.executor(id);
+            if (!x) continue;
+            const Sequence* seq = e.sequence(x->sequenceId);
+            const int cues = seq ? static_cast<int>(seq->cues.size()) : 0;
+            const int w = (cues >= 3 || x->label == "BLINDER") ? 3 : 2;
+            const int h = (cues >= 3 || x->label == "BLINDER") ? 2 : 1;
+            Surface* canvas = e.surfaces.byId(2);
+            if (col + w > canvas->cols) { col = 0; row += rowH; rowH = 0; }
+            e.surfaces.placeAt(2, Rect{col, row, w, h}, TileKind::Executor, x->uid);
+            col += w;
+            rowH = std::max(rowH, h);
+        }
+    }
+
     // A binding set, so the Learn surface has something in it.
     con.execute("BindingSet \"Default\"");
 
@@ -343,6 +371,44 @@ std::string snapshot(Session& s) {
             j.member("nextName", std::string());
             j.member("nextFade", 0.0);
         }
+        j.endObject();
+    }
+    j.endArray();
+
+    // --- executor surfaces (§9.6) ----------------------------------------
+    // Both styles come from the same pages; what differs is how each page
+    // says it wants to be laid out.
+    j.member("surface", e.surfaces.current());
+    j.key("surfaces").beginArray();
+    for (const Surface& sf : e.surfaces.all()) {
+        j.beginObject();
+        j.member("id", sf.id);
+        j.member("name", sf.name);
+        j.member("style", surfaceStyleName(sf.style));
+        j.member("cols", sf.cols);
+        j.member("rows", sf.rows);
+        j.key("tiles").beginArray();
+        for (const Tile& t : sf.tiles) {
+            j.beginObject();
+            j.member("kind", tileKindName(t.kind));
+            j.member("slot", t.slot);
+            j.member("x", t.rect.x);
+            j.member("y", t.rect.y);
+            j.member("w", t.rect.w);
+            j.member("h", t.rect.h);
+            j.member("legend", t.legendOverride);
+            // The tile stores a UID; the UI resolves it to whatever that
+            // object is called NOW (§9.2), so a rename needs nothing here.
+            int execId = 0;
+            for (const Executor& x : e.executors)
+                if (x.uid == t.target) execId = x.id;
+            j.member("executor", execId);
+            j.endObject();
+        }
+        j.endArray();
+        j.key("problems").beginArray();
+        for (const std::string& w : e.surfaces.validate(sf.id)) j.value(w);
+        j.endArray();
         j.endObject();
     }
     j.endArray();

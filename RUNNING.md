@@ -54,6 +54,12 @@ set `LUMEN_CHROME` if yours is not at the default path.
     python3 tools/ui_drive.py out.png     # clicks, drags, types; reports
     python3 tools/ui_shot.py http://127.0.0.1:7373 shot.png
 
+Run it against a **freshly started** `--demo` server. It converts a surface
+page between styles, and canvas → wing → canvas is not the identity: the
+first leg discards the tile sizes, by design (§9.6). A server you have
+already been driving by hand will fail the check, and it says so rather than
+failing obscurely.
+
 ## What is not here yet
 
 Transports only, each blocked on a device rather than a decision: MIDI and

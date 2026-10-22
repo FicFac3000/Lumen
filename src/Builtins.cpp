@@ -9,6 +9,7 @@
 #include "lumen/Undo.hpp"
 #include "lumen/Mvr.hpp"
 #include "lumen/Show.hpp"
+#include "lumen/Surface.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -446,6 +447,124 @@ void Console::installBuiltins() {
             ctx.engine.grandMaster = pct(ctx.number(0, 100));
             return Result::good("grand master " +
                                 std::to_string(static_cast<int>(ctx.number(0, 100))) + "%");
+        }});
+
+    // ------------------------------------------------------- surfaces (§9)
+    // Written BEFORE the UI needed them, for once. Three rounds of finding a
+    // missing command by building a surface is enough of a lesson.
+    registry_.add({
+        "Surface", {"surf"},
+        {{"page", ParamType::Int, false, "page id; lists them if omitted"}},
+        Privilege::Operator, false, false,
+        "Selects an executor surface page, or lists them (SPEC 9.6).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.surfaces;
+            if (!ctx.arg(0)) {
+                Result r = Result::good(plural(store.size(), "page", "pages"));
+                for (const Surface& s : store.all())
+                    r.rows.push_back(std::to_string(s.id) + " " + s.name + "  " +
+                                     surfaceStyleName(s.style) + "  " +
+                                     std::to_string(s.tiles.size()) + " tile(s)" +
+                                     (s.id == store.current() ? "  <- current" : ""));
+                return r;
+            }
+            const int id = static_cast<int>(ctx.number(0, 0));
+            if (!store.setCurrent(id))
+                return Result::bad("no surface page " + std::to_string(id));
+            const Surface* s = store.byId(id);
+            return Result::good("page " + std::to_string(id) + " (" + s->name + ", " +
+                                surfaceStyleName(s->style) + ")");
+        }});
+
+    registry_.add({
+        "SurfaceStyle", {},
+        {{"style", ParamType::Enum, true, "wing or canvas", {"wing", "canvas"}},
+         {"page", ParamType::Int, false, "page id; the current one if omitted"},
+         {"force", ParamType::String, false, "`force` to accept dropped tiles"}},
+        Privilege::Operator, false, false,
+        "Converts a surface page between the fixed wing and the free canvas. "
+        "Reports what the change costs before it costs it (SPEC 9.6).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.surfaces;
+            const std::optional<SurfaceStyle> want = surfaceStyleFromName(ctx.text(0));
+            if (!want) return Result::bad("expected wing or canvas");
+            const int id = ctx.arg(1) ? static_cast<int>(ctx.number(1, 0))
+                                      : store.current();
+            if (!store.byId(id))
+                return Result::bad("no surface page " + std::to_string(id));
+            const std::string third = ctx.text(2);
+            const bool force = (third == "force" || third == "Force");
+
+            std::string err;
+            const ConvertReport rep = store.setStyle(id, *want, force, &err);
+            if (!err.empty()) {
+                // Refused, with the reason and the full list: a layout
+                // somebody arranged by hand is not discarded on a shrug.
+                Result r = Result::bad(err);
+                for (const std::string& n : rep.notes) r.rows.push_back(n);
+                return r;
+            }
+            Result r = Result::good("page " + std::to_string(id) + " is now a " +
+                                    surfaceStyleName(*want));
+            if (!rep.lossless)
+                for (const std::string& n : rep.notes) r.rows.push_back(n);
+            return r;
+        }});
+
+    registry_.add({
+        "Tile", {},
+        {{"slot", ParamType::Int, true, "slot number on the page, 1-based"},
+         {"kind", ParamType::Enum, true, "what the tile holds",
+          {"executor", "group", "preset", "empty"}},
+         {"target", ParamType::Int, false, "the object's id"}},
+        Privilege::Operator, false, false,
+        "Assigns a tile on the current surface page. `Tile 3 executor 2` "
+        "(SPEC 9.2).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.surfaces;
+            const int page = store.current();
+            Surface* s = store.byId(page);
+            if (!s) return Result::bad("no surface page selected");
+
+            const int slot = static_cast<int>(ctx.number(0, 0)) - 1;
+            const std::optional<TileKind> kind = tileKindFromName(ctx.text(1));
+            if (!kind) return Result::bad("unknown tile kind: " + ctx.text(1));
+
+            if (*kind == TileKind::Empty) {
+                if (const Tile* t = s->atSlot(slot)) {
+                    const Uid uid = t->uid;
+                    store.clearTile(page, uid);
+                    return Result::good("slot " + std::to_string(slot + 1) + " cleared");
+                }
+                return Result::good("slot " + std::to_string(slot + 1) +
+                                    " was already empty");
+            }
+
+            // The tile stores the object's UID, never its name (§8.1, §9.2),
+            // so the legend follows a rename with no bookkeeping anywhere.
+            const int targetId = static_cast<int>(ctx.number(2, 0));
+            Uid target{};
+            if (*kind == TileKind::Executor) {
+                const Executor* x = ctx.engine.executor(targetId);
+                if (!x) return Result::bad("no executor " + std::to_string(targetId));
+                target = x->uid;
+            } else if (*kind == TileKind::Group) {
+                const GroupDef* g = ctx.engine.groups.byId(targetId);
+                if (!g) return Result::bad("no group " + std::to_string(targetId));
+                target = g->uid;
+            } else if (*kind == TileKind::Preset) {
+                return Result::bad("preset tiles need pool.id — not yet wired");
+            }
+
+            PlaceResult r = (s->style == SurfaceStyle::Wing)
+                                ? store.placeInSlot(page, slot, *kind, target)
+                                : store.placeAt(page,
+                                                Rect{slot % s->cols, slot / s->cols, 1, 1},
+                                                *kind, target);
+            if (!r.ok) return Result::bad(r.error);
+            return Result::good(std::string(tileKindName(*kind)) + " " +
+                                std::to_string(targetId) + " on slot " +
+                                std::to_string(slot + 1));
         }});
 
     // The executor fader. The single most-used control on a console, and it

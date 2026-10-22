@@ -898,10 +898,83 @@ static void testEmptyShow() {
     CHECK_EQ(b.patch.typeCount(), 0);  // the loaded show replaces, not merges
 }
 
+// Keeping both styles is only real if a page's style survives a save: a show
+// that forgets which of its surfaces was a wing has not kept both, it has
+// kept one and guessed.
+static void testSurfacesRoundTrip() {
+    const std::string path = tmpDir() + "/surfaces.lumen";
+    fs::remove(path);
+
+    Engine a;
+    buildShow(a);
+    installStarterSurfaces(a.surfaces);
+
+    // A wing page with a gap in it: the empty slot between two tiles is part
+    // of the layout, not an absence, so it has to come back the same.
+    a.surfaces.placeInSlot(1, 0, TileKind::Executor, a.uids.next());
+    a.surfaces.placeInSlot(1, 4, TileKind::Group, a.uids.next());
+    a.surfaces.byId(1)->tiles[1].legendOverride = "BLINDER";
+
+    // A canvas page with tiles of different sizes, which is the whole claim
+    // of that style.
+    a.surfaces.placeAt(2, Rect{0, 0, 3, 2}, TileKind::Executor, a.uids.next());
+    a.surfaces.placeAt(2, Rect{3, 0, 2, 1}, TileKind::Executor, a.uids.next());
+    a.surfaces.setCurrent(2);
+
+    CHECK(ShowFile::save(a, path, "Surfaces").ok);
+
+    Engine b;
+    const LoadReport lr = ShowFile::load(b, path);
+    CHECK(lr.ok);
+    CHECK(lr.warnings.empty());
+    CHECK_EQ(b.surfaces.size(), size_t(2));
+
+    const Surface* wing = b.surfaces.byId(1);
+    CHECK(wing != nullptr);
+    CHECK(wing->style == SurfaceStyle::Wing);
+    CHECK(wing->name == "Wing");
+    CHECK_EQ(wing->cols, 10);
+    CHECK_EQ(wing->tiles.size(), size_t(2));
+    CHECK(wing->atSlot(0) != nullptr);
+    CHECK(wing->atSlot(4) != nullptr);
+    // The gap is still a gap.
+    CHECK(wing->atSlot(1) == nullptr);
+    CHECK(wing->atSlot(4)->legendOverride == "BLINDER");
+    CHECK(wing->atSlot(4)->kind == TileKind::Group);
+
+    const Surface* canvas = b.surfaces.byId(2);
+    CHECK(canvas != nullptr);
+    CHECK(canvas->style == SurfaceStyle::Canvas);
+    CHECK_EQ(canvas->tiles.size(), size_t(2));
+    CHECK_EQ(canvas->tiles[0].rect.w, 3);
+    CHECK_EQ(canvas->tiles[0].rect.h, 2);
+    CHECK_EQ(canvas->tiles[1].rect.x, 3);
+
+    // Targets are UIDs, so they survive identically — the legend is a view
+    // of the object, not a copy of its name (§8.1, §9.2).
+    CHECK(canvas->tiles[0].target == a.surfaces.byId(2)->tiles[0].target);
+    CHECK(wing->atSlot(0)->uid == a.surfaces.byId(1)->atSlot(0)->uid);
+
+    // A reloaded page still passes §9.1.
+    CHECK(b.surfaces.validate(1).empty());
+    CHECK(b.surfaces.validate(2).empty());
+
+    // And converting after a load behaves the same as converting before one.
+    std::string err;
+    const ConvertReport rep = b.surfaces.setStyle(2, SurfaceStyle::Wing, false, &err);
+    CHECK(!rep.lossless);
+    CHECK_EQ(rep.resized, 2);
+    CHECK(err.empty());
+    CHECK(b.surfaces.byId(2)->style == SurfaceStyle::Wing);
+
+    fs::remove(path);
+}
+
 int main() {
     std::printf("lumen show\n");
     testRoundTrip();
     testGroupsPresetsRecipesRoundTrip();
+    testSurfacesRoundTrip();
     testShowFilesThroughTheConsole();
     testLoadedShowRuns();
     testUidsNotReused();

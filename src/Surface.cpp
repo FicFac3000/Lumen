@@ -1,0 +1,435 @@
+#include "lumen/Surface.hpp"
+
+#include <algorithm>
+#include <string>
+
+namespace lumen {
+
+const char* surfaceStyleName(SurfaceStyle s) {
+    switch (s) {
+        case SurfaceStyle::Wing: return "wing";
+        case SurfaceStyle::Canvas: return "canvas";
+    }
+    return "?";
+}
+
+std::optional<SurfaceStyle> surfaceStyleFromName(const std::string& s) {
+    if (s == "wing" || s == "Wing" || s == "chamsys") return SurfaceStyle::Wing;
+    if (s == "canvas" || s == "Canvas" || s == "ma3") return SurfaceStyle::Canvas;
+    return std::nullopt;
+}
+
+const char* tileKindName(TileKind k) {
+    switch (k) {
+        case TileKind::Executor: return "executor";
+        case TileKind::Group: return "group";
+        case TileKind::Preset: return "preset";
+        case TileKind::Recipe: return "recipe";
+        case TileKind::Macro: return "macro";
+        case TileKind::GrandMaster: return "grandmaster";
+        case TileKind::Blackout: return "blackout";
+        case TileKind::Timecode: return "timecode";
+        case TileKind::LaserZone: return "laserzone";
+        case TileKind::Label: return "label";
+        case TileKind::Empty: return "empty";
+        case TileKind::Count: break;
+    }
+    return "?";
+}
+
+std::optional<TileKind> tileKindFromName(const std::string& s) {
+    for (int i = 0; i < static_cast<int>(TileKind::Count); ++i) {
+        const TileKind k = static_cast<TileKind>(i);
+        if (s == tileKindName(k)) return k;
+    }
+    return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// Surface
+// ---------------------------------------------------------------------------
+const Tile* Surface::atSlot(int s) const {
+    for (const Tile& t : tiles)
+        if (t.slot == s) return &t;
+    return nullptr;
+}
+
+Tile* Surface::atSlot(int s) {
+    for (Tile& t : tiles)
+        if (t.slot == s) return &t;
+    return nullptr;
+}
+
+const Tile* Surface::find(Uid tile) const {
+    for (const Tile& t : tiles)
+        if (t.uid == tile) return &t;
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
+Surface& SurfaceStore::add(Surface s) {
+    if (!s.uid.valid()) s.uid = uids_->next();
+    if (s.id <= 0) {
+        int top = 0;
+        for (const Surface& e : surfaces_) top = std::max(top, e.id);
+        s.id = top + 1;
+    }
+    if (s.name.empty()) s.name = "Surface " + std::to_string(s.id);
+    for (Tile& t : s.tiles)
+        if (!t.uid.valid()) t.uid = uids_->next();
+    surfaces_.push_back(std::move(s));
+    if (current_ == 0) current_ = surfaces_.back().id;
+    return surfaces_.back();
+}
+
+Surface& SurfaceStore::restore(Surface s) {
+    surfaces_.push_back(std::move(s));
+    if (current_ == 0) current_ = surfaces_.back().id;
+    return surfaces_.back();
+}
+
+Surface* SurfaceStore::mutableById(int id) {
+    for (Surface& s : surfaces_)
+        if (s.id == id) return &s;
+    return nullptr;
+}
+
+Surface* SurfaceStore::byId(int id) { return mutableById(id); }
+
+const Surface* SurfaceStore::byId(int id) const {
+    for (const Surface& s : surfaces_)
+        if (s.id == id) return &s;
+    return nullptr;
+}
+
+Surface* SurfaceStore::find(Uid uid) {
+    for (Surface& s : surfaces_)
+        if (s.uid == uid) return &s;
+    return nullptr;
+}
+
+const Surface* SurfaceStore::find(Uid uid) const {
+    for (const Surface& s : surfaces_)
+        if (s.uid == uid) return &s;
+    return nullptr;
+}
+
+Surface* SurfaceStore::byName(const std::string& name) {
+    for (Surface& s : surfaces_)
+        if (s.name == name) return &s;
+    return nullptr;
+}
+
+bool SurfaceStore::remove(int id) {
+    for (auto it = surfaces_.begin(); it != surfaces_.end(); ++it) {
+        if (it->id != id) continue;
+        surfaces_.erase(it);
+        if (current_ == id) current_ = surfaces_.empty() ? 0 : surfaces_.front().id;
+        return true;
+    }
+    return false;
+}
+
+bool SurfaceStore::setCurrent(int id) {
+    if (!byId(id)) return false;
+    current_ = id;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Placement
+// ---------------------------------------------------------------------------
+PlaceResult SurfaceStore::placeInSlot(int surfaceId, int slot, TileKind kind,
+                                      Uid target) {
+    PlaceResult r;
+    Surface* s = mutableById(surfaceId);
+    if (!s) {
+        r.error = "no surface " + std::to_string(surfaceId);
+        return r;
+    }
+    if (slot < 0 || slot >= s->slotCount()) {
+        r.error = "slot " + std::to_string(slot + 1) + " is outside this page (" +
+                  std::to_string(s->slotCount()) + " slots)";
+        return r;
+    }
+
+    // On a fixed matrix, "put it here" has exactly one meaning, so an occupied
+    // slot is replaced rather than refused. The caller is told what went.
+    if (Tile* existing = s->atSlot(slot)) {
+        r.replaced = existing->target;
+        existing->kind = kind;
+        existing->target = target;
+        existing->legendOverride.clear();
+        existing->colourOverride.clear();
+        existing->symbolOverride.clear();
+        existing->rect = Rect{slot % s->cols, slot / s->cols, 1, 1};
+        r.ok = true;
+        r.placed = existing->uid;
+        return r;
+    }
+
+    Tile t;
+    t.uid = uids_->next();
+    t.kind = kind;
+    t.target = target;
+    t.slot = slot;
+    // A wing tile still carries a rect, so converting to a canvas is a pure
+    // reinterpretation rather than a reconstruction.
+    t.rect = Rect{slot % s->cols, slot / s->cols, 1, 1};
+    s->tiles.push_back(t);
+    r.ok = true;
+    r.placed = t.uid;
+    return r;
+}
+
+namespace {
+
+// §9.1 in one place, so the canvas and the move path cannot disagree.
+const Tile* firstOverlap(const Surface& s, const Rect& want, Uid ignore) {
+    for (const Tile& t : s.tiles) {
+        if (t.uid == ignore) continue;
+        if (t.rect.overlaps(want)) return &t;
+    }
+    return nullptr;
+}
+
+std::string describe(const Tile& t) {
+    if (!t.legendOverride.empty()) return t.legendOverride;
+    return std::string(tileKindName(t.kind)) + " tile";
+}
+
+} // namespace
+
+PlaceResult SurfaceStore::placeAt(int surfaceId, const Rect& rect, TileKind kind,
+                                  Uid target) {
+    PlaceResult r;
+    Surface* s = mutableById(surfaceId);
+    if (!s) {
+        r.error = "no surface " + std::to_string(surfaceId);
+        return r;
+    }
+    if (rect.empty()) {
+        r.error = "a tile needs a size";
+        return r;
+    }
+    if (rect.x < 0 || rect.y < 0 || rect.right() > s->cols) {
+        r.error = "outside the page (" + std::to_string(s->cols) + " columns wide)";
+        return r;
+    }
+    if (const Tile* clash = firstOverlap(*s, rect, Uid{})) {
+        // Refused, not nudged: a tile that quietly moved somewhere else is
+        // worse than one that did not appear, because the operator presses
+        // where they put it.
+        r.error = "overlaps " + describe(*clash) +
+                  " — overlapping targets mean mis-presses (SPEC 9.1)";
+        return r;
+    }
+
+    Tile t;
+    t.uid = uids_->next();
+    t.kind = kind;
+    t.target = target;
+    t.rect = rect;
+    t.slot = rect.y * s->cols + rect.x;
+    s->tiles.push_back(t);
+    r.ok = true;
+    r.placed = t.uid;
+    return r;
+}
+
+bool SurfaceStore::clearTile(int surfaceId, Uid tile) {
+    Surface* s = mutableById(surfaceId);
+    if (!s) return false;
+    const size_t before = s->tiles.size();
+    s->tiles.erase(std::remove_if(s->tiles.begin(), s->tiles.end(),
+                                  [&](const Tile& t) { return t.uid == tile; }),
+                   s->tiles.end());
+    return s->tiles.size() != before;
+}
+
+PlaceResult SurfaceStore::moveTile(int surfaceId, Uid tile, const Rect& rect) {
+    PlaceResult r;
+    Surface* s = mutableById(surfaceId);
+    if (!s) {
+        r.error = "no surface " + std::to_string(surfaceId);
+        return r;
+    }
+    Tile* t = nullptr;
+    for (Tile& e : s->tiles)
+        if (e.uid == tile) t = &e;
+    if (!t) {
+        r.error = "no such tile on this page";
+        return r;
+    }
+    if (rect.empty()) {
+        r.error = "a tile needs a size";
+        return r;
+    }
+    if (rect.x < 0 || rect.y < 0 || rect.right() > s->cols) {
+        r.error = "outside the page (" + std::to_string(s->cols) + " columns wide)";
+        return r;
+    }
+    if (const Tile* clash = firstOverlap(*s, rect, tile)) {
+        r.error = "overlaps " + describe(*clash) + " (SPEC 9.1)";
+        return r;
+    }
+    t->rect = rect;
+    t->slot = rect.y * s->cols + rect.x;
+    r.ok = true;
+    r.placed = tile;
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// Conversion
+// ---------------------------------------------------------------------------
+ConvertReport SurfaceStore::previewStyle(int surfaceId, SurfaceStyle to) const {
+    ConvertReport rep;
+    const Surface* s = byId(surfaceId);
+    if (!s) {
+        rep.lossless = false;
+        rep.notes.push_back("no surface " + std::to_string(surfaceId));
+        return rep;
+    }
+    if (s->style == to) return rep;
+
+    if (to == SurfaceStyle::Canvas) {
+        // Every slot is already a 1x1 rect at the same position, so there is
+        // nothing to lose. The canvas simply stops ignoring the rect.
+        return rep;
+    }
+
+    // Canvas -> Wing. Two separate losses, counted separately because they
+    // are different kinds of bad: one changes how a tile looks, the other
+    // means a tile has nowhere to be.
+    std::vector<int> taken;
+    for (const Tile& t : s->tiles) {
+        if (t.rect.w > 1 || t.rect.h > 1) {
+            ++rep.resized;
+            rep.notes.push_back(describe(t) + " shrinks from " +
+                                std::to_string(t.rect.w) + "x" +
+                                std::to_string(t.rect.h) + " to one slot");
+        }
+        const int slot = t.rect.y * s->cols + t.rect.x;
+        if (slot < 0 || slot >= s->slotCount()) {
+            ++rep.displaced;
+            rep.notes.push_back(describe(t) + " falls outside the " +
+                                std::to_string(s->cols) + "x" + std::to_string(s->rows) +
+                                " matrix");
+            continue;
+        }
+        if (std::find(taken.begin(), taken.end(), slot) != taken.end()) {
+            ++rep.displaced;
+            rep.notes.push_back(describe(t) + " collides with another tile in slot " +
+                                std::to_string(slot + 1));
+            continue;
+        }
+        taken.push_back(slot);
+    }
+    rep.lossless = (rep.resized == 0 && rep.displaced == 0);
+    return rep;
+}
+
+ConvertReport SurfaceStore::setStyle(int surfaceId, SurfaceStyle to, bool force,
+                                     std::string* err) {
+    ConvertReport rep = previewStyle(surfaceId, to);
+    Surface* s = mutableById(surfaceId);
+    if (!s) {
+        if (err) *err = "no surface " + std::to_string(surfaceId);
+        return rep;
+    }
+    if (s->style == to) return rep;
+
+    // Losing a hand-made layout is always a decision somebody made, never one
+    // that happened to them.
+    if (rep.wouldDropTiles() && !force) {
+        if (err)
+            *err = std::to_string(rep.displaced) +
+                   " tile(s) have nowhere to go in a fixed matrix; "
+                   "convert anyway to drop them";
+        return rep;
+    }
+
+    if (to == SurfaceStyle::Canvas) {
+        for (Tile& t : s->tiles)
+            t.rect = Rect{t.slot % s->cols, t.slot / s->cols, 1, 1};
+        s->style = to;
+        return rep;
+    }
+
+    std::vector<Tile> kept;
+    std::vector<int> taken;
+    for (Tile& t : s->tiles) {
+        const int slot = t.rect.y * s->cols + t.rect.x;
+        if (slot < 0 || slot >= s->slotCount()) continue;
+        if (std::find(taken.begin(), taken.end(), slot) != taken.end()) continue;
+        taken.push_back(slot);
+        t.slot = slot;
+        t.rect = Rect{slot % s->cols, slot / s->cols, 1, 1};
+        kept.push_back(t);
+    }
+    s->tiles = std::move(kept);
+    s->style = to;
+    return rep;
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+std::vector<std::string> SurfaceStore::validate(int surfaceId) const {
+    std::vector<std::string> out;
+    const Surface* s = byId(surfaceId);
+    if (!s) {
+        out.push_back("no surface " + std::to_string(surfaceId));
+        return out;
+    }
+
+    if (s->style == SurfaceStyle::Wing) {
+        for (size_t i = 0; i < s->tiles.size(); ++i)
+            for (size_t k = i + 1; k < s->tiles.size(); ++k)
+                if (s->tiles[i].slot == s->tiles[k].slot)
+                    out.push_back(describe(s->tiles[i]) + " and " + describe(s->tiles[k]) +
+                                  " both claim slot " + std::to_string(s->tiles[i].slot + 1));
+        for (const Tile& t : s->tiles)
+            if (t.slot < 0 || t.slot >= s->slotCount())
+                out.push_back(describe(t) + " is in slot " + std::to_string(t.slot + 1) +
+                              ", outside this page");
+        return out;
+    }
+
+    for (size_t i = 0; i < s->tiles.size(); ++i)
+        for (size_t k = i + 1; k < s->tiles.size(); ++k)
+            if (s->tiles[i].rect.overlaps(s->tiles[k].rect))
+                out.push_back(describe(s->tiles[i]) + " overlaps " +
+                              describe(s->tiles[k]) + " (SPEC 9.1)");
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Starter pair
+// ---------------------------------------------------------------------------
+void installStarterSurfaces(SurfaceStore& store) {
+    if (!store.all().empty()) return;
+
+    Surface wing;
+    wing.id = 1;
+    wing.name = "Wing";
+    wing.style = SurfaceStyle::Wing;
+    wing.cols = 10;
+    wing.rows = 2;
+    store.add(std::move(wing));
+
+    Surface canvas;
+    canvas.id = 2;
+    canvas.name = "Show";
+    canvas.style = SurfaceStyle::Canvas;
+    canvas.cols = 12;
+    canvas.rows = 8;
+    store.add(std::move(canvas));
+
+    store.setCurrent(1);
+}
+
+} // namespace lumen

@@ -36,6 +36,21 @@ async def main(out):
         pg.on("pageerror", lambda e: errs.append(f"pageerror: {e}"))
 
         cmd("ClearAll")
+
+        # This drives a show and then checks the engine, so it needs the demo
+        # rig as `--demo` builds it. Converting a canvas page to a wing and
+        # back is NOT the identity — the sizes are gone after the first leg —
+        # so a server somebody has already been poking at will fail here for
+        # reasons that have nothing to do with the code.
+        pages = {p["name"]: p for p in state()["surfaces"]}
+        fresh = (pages.get("Show", {}).get("style") == "canvas" and
+                 any(t["w"] > 1 for t in pages.get("Show", {}).get("tiles", [])))
+        if not fresh:
+            print("  !! restart `lumen-server --demo` first: page 2 is not the "
+                  "demo canvas any more")
+            await b.close()
+            return 1
+
         await pg.goto(BASE, wait_until="domcontentloaded")
         await pg.wait_for_timeout(1200)
 
@@ -119,14 +134,25 @@ async def main(out):
         laser_open = await pg.locator(".win >> text=LASER").count()
         results.append((laser_open > 0, "Laser window appears", f"{laser_open} match"))
 
-        # ---- the executor surface, in both styles (§9) -------------------
-        # Both render from the same state, so whatever works in one must work
-        # in the other. That is the point of having both.
-        for style, cls in [("ChamSys wing", ".wing-cell"), ("MA3 canvas", ".c-tile")]:
-            await pg.click(f".style-pick >> text={style}")
-            await pg.wait_for_timeout(500)
+        # ---- the executor surface (§9.6) ---------------------------------
+        # The style belongs to the PAGE, and the engine owns the pages. So
+        # both styles have to render from the same snapshot, and whatever
+        # works in one must work in the other.
+        cmd("SurfaceStyle wing 1")
+        cmd("SurfaceStyle canvas 2")
+        await pg.wait_for_timeout(500)
+
+        for page, style, cls in [("Wing", "wing", ".wing-cell"),
+                                 ("Show", "canvas", ".c-tile")]:
+            await pg.click(f".style-pick >> text={page} · {style}")
+            await pg.wait_for_timeout(600)
+            cur = next(p for p in state()["surfaces"]
+                       if p["id"] == state()["surface"])
+            results.append((cur["name"] == page,
+                            f"selecting {page} is a command",
+                            f'engine says page {cur["id"]}'))
             n = await pg.locator(cls).count()
-            results.append((n > 0, f"{style} renders", f"{n} tiles"))
+            results.append((n > 0, f"{style} page renders", f"{n} tiles"))
 
             # A tile must Go its executor.
             cmd("Off 1")
@@ -149,14 +175,33 @@ async def main(out):
             results.append((0.15 < m < 0.45, f"{style}: fader sets master",
                             f"master {m:.2f}"))
 
-        # Side by side must show both, and the wing must NOT reflow to fit —
-        # reflowing would destroy the one property it exists to demonstrate.
-        await pg.click(".style-pick >> text=Side by side")
+        # Converting a page is a command, and the page really changes.
+        await pg.click(".style-pick >> text=Show · canvas")
         await pg.wait_for_timeout(600)
+        await pg.click(".style-pick >> text=Make it a wing")
+        await pg.wait_for_timeout(800)
+        now = next(p for p in state()["surfaces"] if p["id"] == 2)
+        results.append((now["style"] == "wing", "convert canvas to wing",
+                        f'page 2 is now {now["style"]}'))
+        tiles_after = len(now["tiles"])
+        results.append((tiles_after == 6, "conversion kept every tile",
+                        f"{tiles_after} tiles"))
+        await pg.click(".style-pick >> text=Make it a canvas")
+        await pg.wait_for_timeout(800)
+        back = next(p for p in state()["surfaces"] if p["id"] == 2)
+        results.append((back["style"] == "canvas", "and back again",
+                        f'page 2 is {back["style"]}'))
+
+        # Side by side must show every page, each in its own style, and the
+        # wing must NOT reflow — reflowing destroys the one property it is
+        # there to demonstrate.
+        await pg.click(".style-pick >> text=Side by side")
+        await pg.wait_for_timeout(700)
+        halves = await pg.locator(".half").count()
         wings = await pg.locator(".wing-cell").count()
-        tiles = await pg.locator(".c-tile").count()
-        results.append((wings == 20 and tiles > 0, "side by side shows both",
-                        f"{wings} wing slots, {tiles} canvas tiles"))
+        results.append((halves == 2 and wings == 20,
+                        "side by side shows both pages",
+                        f"{halves} halves, {wings} wing slots"))
 
         # §9.1: no two tiles may overlap on the canvas.
         clash = await pg.locator(".clash").count()

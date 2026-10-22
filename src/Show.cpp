@@ -404,6 +404,26 @@ CREATE TABLE IF NOT EXISTS binding (
   rel_scale REAL NOT NULL, toggle_state INTEGER NOT NULL,
   FOREIGN KEY(set_uid) REFERENCES binding_set(uid) ON DELETE CASCADE);
 
+-- Executor surfaces (SPEC 9.6). The STYLE is a property of the page, which
+-- is what lets one show hold a busking wing and a programmed canvas at once
+-- rather than having a single answer imposed on all of them.
+CREATE TABLE IF NOT EXISTS surface (
+  uid INTEGER PRIMARY KEY, sid INTEGER NOT NULL, name TEXT NOT NULL,
+  style INTEGER NOT NULL, cols INTEGER NOT NULL, rows INTEGER NOT NULL,
+  ord INTEGER NOT NULL);
+
+-- A tile stores the assigned object's UID, never a copy of its name or
+-- colour (SPEC 8.1, 9.2): the legend is a view, so a rename needs no
+-- bookkeeping here. Both placements are stored, so a page converted between
+-- styles and saved does not lose the other one's geometry.
+CREATE TABLE IF NOT EXISTS surface_tile (
+  uid INTEGER PRIMARY KEY, surface_uid INTEGER NOT NULL, kind INTEGER NOT NULL,
+  target INTEGER NOT NULL, slot INTEGER NOT NULL,
+  x INTEGER NOT NULL, y INTEGER NOT NULL, w INTEGER NOT NULL, h INTEGER NOT NULL,
+  legend TEXT NOT NULL, colour TEXT NOT NULL, symbol TEXT NOT NULL,
+  ord INTEGER NOT NULL,
+  FOREIGN KEY(surface_uid) REFERENCES surface(uid) ON DELETE CASCADE);
+
 -- The action log (SPEC 8.6). Persisted, unlike the undo history: a reopened
 -- show should know what was done to it, but must not be rewindable past its
 -- saved state. An agent action carries the prompt that caused it (16.5).
@@ -412,6 +432,7 @@ CREATE TABLE IF NOT EXISTS action_log (
   scope TEXT NOT NULL, source TEXT NOT NULL, prompt TEXT NOT NULL,
   undone INTEGER NOT NULL, ord INTEGER NOT NULL);
 
+CREATE INDEX IF NOT EXISTS ix_tile_surface ON surface_tile(surface_uid, ord);
 CREATE INDEX IF NOT EXISTS ix_cue_seq ON cue(seq_uid, idx);
 CREATE INDEX IF NOT EXISTS ix_lib_chan ON library_channel(library_uid, mode_ord, ord);
 CREATE INDEX IF NOT EXISTS ix_preset_pool ON preset(pool, pid);
@@ -1171,6 +1192,48 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
                   .bind(3, e.def.revisions[ri].text)
                   .bind(4, e.def.revisions[ri].date);
                 if (!lr.run()) return fail("write library revision");
+            }
+        }
+    }
+
+    // --- executor surfaces (§9.6) -----------------------------------------
+    {
+        Stmt su(db, "INSERT INTO surface(uid,sid,name,style,cols,rows,ord) "
+                    "VALUES(?,?,?,?,?,?,?)");
+        Stmt ti(db, "INSERT INTO surface_tile(uid,surface_uid,kind,target,slot,"
+                    "x,y,w,h,legend,colour,symbol,ord) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        if (!su.valid() || !ti.valid()) return fail("prepare surfaces");
+
+        int ord = 0;
+        for (const Surface& sf : eng.surfaces.all()) {
+            su.reset();
+            su.bindUid(1, sf.uid)
+              .bind(2, sf.id)
+              .bind(3, sf.name)
+              .bind(4, static_cast<int>(sf.style))
+              .bind(5, sf.cols)
+              .bind(6, sf.rows)
+              .bind(7, ord++);
+            if (!su.run()) return fail("write surface");
+
+            int tord = 0;
+            for (const Tile& t : sf.tiles) {
+                ti.reset();
+                ti.bindUid(1, t.uid)
+                  .bindUid(2, sf.uid)
+                  .bind(3, static_cast<int>(t.kind))
+                  .bindUid(4, t.target)
+                  .bind(5, t.slot)
+                  .bind(6, t.rect.x)
+                  .bind(7, t.rect.y)
+                  .bind(8, t.rect.w)
+                  .bind(9, t.rect.h)
+                  .bind(10, t.legendOverride)
+                  .bind(11, t.colourOverride)
+                  .bind(12, t.symbolOverride)
+                  .bind(13, tord++);
+                if (!ti.run()) return fail("write surface tile");
             }
         }
     }
@@ -1959,6 +2022,56 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
         } else {
             rep.warnings.push_back("file has no fixture library");
         }
+    }
+
+    // --- executor surfaces ------------------------------------------------
+    {
+        Stmt su(db, "SELECT uid,sid,name,style,cols,rows FROM surface ORDER BY ord");
+        if (su.valid()) {
+            while (su.step()) {
+                Surface sf;
+                sf.uid = su.uid(0);
+                sf.id = su.i32(1);
+                sf.name = su.text(2);
+                const int style = su.i32(3);
+                sf.style = (style == static_cast<int>(SurfaceStyle::Canvas))
+                               ? SurfaceStyle::Canvas
+                               : SurfaceStyle::Wing;
+                sf.cols = su.i32(4);
+                sf.rows = su.i32(5);
+                eng.uids.observe(sf.uid);
+
+                Stmt ti(db, "SELECT uid,kind,target,slot,x,y,w,h,legend,colour,symbol "
+                            "FROM surface_tile WHERE surface_uid=? ORDER BY ord");
+                ti.bindUid(1, sf.uid);
+                while (ti.step()) {
+                    Tile t;
+                    t.uid = ti.uid(0);
+                    const int kind = ti.i32(1);
+                    t.kind = (kind >= 0 && kind < static_cast<int>(TileKind::Count))
+                                 ? static_cast<TileKind>(kind)
+                                 : TileKind::Empty;
+                    t.target = ti.uid(2);
+                    t.slot = ti.i32(3);
+                    t.rect = Rect{ti.i32(4), ti.i32(5), ti.i32(6), ti.i32(7)};
+                    t.legendOverride = ti.text(8);
+                    t.colourOverride = ti.text(9);
+                    t.symbolOverride = ti.text(10);
+                    eng.uids.observe(t.uid);
+                    sf.tiles.push_back(std::move(t));
+                }
+                // restore(), not add(): a load must not re-identify or rename
+                // what it is restoring.
+                eng.surfaces.restore(std::move(sf));
+            }
+        }
+        // A page that fails §9.1 came from a damaged file, not from the
+        // placement API, which is exactly the case validate() exists for.
+        for (const Surface& sf : eng.surfaces.all())
+            for (const std::string& w : eng.surfaces.validate(sf.id))
+                rep.warnings.push_back("surface " + sf.name + ": " + w);
+        if (!eng.surfaces.all().empty())
+            eng.surfaces.setCurrent(eng.surfaces.all().front().id);
     }
 
     // --- binding sets -----------------------------------------------------

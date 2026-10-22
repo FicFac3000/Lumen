@@ -12,6 +12,7 @@
 #include "lumen/Preset.hpp"
 #include "lumen/Programmer.hpp"
 #include "lumen/Recipe.hpp"
+#include "lumen/Surface.hpp"
 #include "lumen/TripleBuffer.hpp"
 #include "lumen/Timecode.hpp"
 #include "lumen/Undo.hpp"
@@ -121,6 +122,10 @@ public:
     GroupStore groups{uids};
     PresetStore presets{uids};
     RecipeLibrary recipes{uids};
+    // Executor surfaces (§9). A page owns its STYLE, so a show keeps a
+    // busking wing and a programmed canvas side by side rather than having
+    // one answer imposed on every surface it owns (§9.6).
+    SurfaceStore surfaces{uids};
     // Fixture definitions, each keeping the .gdtf package it came from
     // (Library.hpp). The patch holds compiled types; this holds the sources.
     FixtureLibrary library{uids};
