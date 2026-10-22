@@ -100,6 +100,7 @@ const std::array<AttrInfo, kAttrCount> kTable = {{
     {Attr::FanMode,          Group::Control,   kIdx,   "FanMode",     "Fan Mode",    "❄"},
     {Attr::FanSpeed,         Group::Control,   kCont,  "FanSpeed",    "Fan Speed",   "❄"},
     {Attr::DisplayIntensity, Group::Control,   kCont,  "DisplayIntensity", "Display","☰"},
+    {Attr::Arm,              Group::Control,   kCont,  "Arm",       "Arm",     "⚠"},
 }};
 
 static_assert(kTable.size() == kAttrCount, "attribute table must cover every Attr");

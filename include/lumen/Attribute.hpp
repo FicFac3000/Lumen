@@ -98,6 +98,11 @@ enum class Attr : uint16_t {
 
     // Control — never in the encoder rotation; press-and-confirm only
     LampOn, LampOff, Reset, ResetPanTilt, FanMode, FanSpeed, DisplayIntensity,
+    // §14.2: a laser zone's Arm. The attribute exists so the state is
+    // visible and storable like any other, but it is NOT what arms a zone —
+    // the safety gate's armed state is reachable only by an explicit
+    // hold-to-fire act (§14.6). A cue storing Arm=1 arms nothing.
+    Arm,
 
     Count
 };

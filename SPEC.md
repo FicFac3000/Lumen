@@ -2566,6 +2566,18 @@ The pipeline, per zone, per frame:
      galvo velocity
    - **Point-rate budgeting** — total points across all zones must fit the
      DAC's pps, or the frame rate drops and the figure flickers
+
+`[done]` Stages 1–4 are built and the optimiser is **stable under re-entry**,
+which matters because this section leaves per-zone versus per-projector tuning
+open and chained passes are therefore plausible. Two things made it unstable
+and are fixed: a leg sitting exactly on the step limit measures a hair above it
+in floats and was split in half on every pass, and blanking dwell was re-added
+at transitions that already had it. Corner dwell wraps a **closed** figure's
+seam, or a square gets dwell on three corners and a visibly distorted fourth.
+Decimation preserves every blanking transition — dropping one turns a blanked
+move into a visible line, which is a safety matter and not a cosmetic one. A
+budget overrun is a **fault**, not a truncation: a half-drawn figure at the
+wrong rate is a flickering beam.
 4. **Colour shift correction** — colour channels lag the galvos; a per-projector
    sample offset compensates.
 5. **Safety gate** (§14.6) — last, always.
@@ -2596,23 +2608,55 @@ a macro. This is a structural statement, not a policy one: if safety limits
 were merged alongside ordinary values they could be overridden by priority
 (§11.4), and the whole point is that they cannot be.
 
+`[done]` **Enforced by the type system, not by discipline.** A DAC accepts only
+a `GatedFrame`, and `GatedFrame` has no public constructor — `SafetyGate` is
+the only thing that can make one. Handing raw points to a projector is a
+COMPILE ERROR, which is the only version of this rule that survives contact
+with future code. Four bypass routes are checked: default-constructing a frame,
+passing a path where a frame is expected, mutating an already-gated frame's
+points, and inheriting a way in. All four are rejected by the compiler, and the
+test suite asserts the type traits so the guarantee cannot be quietly removed.
+
+`[done]` The gate's own state is equally unreachable from the value system.
+`Arm` exists as a Control attribute so the state is visible and storable like
+anything else, but the armed flag lives in the gate and only an explicit
+hold-to-fire act sets it. Tested with an Arm value written straight into the
+programmer, stored in a cue, asserted by a running playback and present at full
+value in the merged output — and the zone stays dark.
+
 Required behaviours:
 
-- **Scan-fail blanking.** A stationary beam at full power is the dangerous
-  case. Blank on: point-stream stall, DAC buffer underrun, DAC disconnect,
-  render thread stall, and loss of galvo motion where the DAC reports it.
-- **Per-zone masks** with hard geometric limits — a zone cannot emit outside
-  its mask regardless of content or transform.
-- **Per-zone maximum power / attenuation**, applied after all merging.
-- **Audience-scanning zones** flagged distinctly, with independent attenuation
-  that is separate from and cannot be raised by the normal intensity path.
-- **Emergency stop** — one always-reachable control that blanks all laser
-  output immediately, on its own path, independent of playback, blackout and
-  grand master.
-- **Fail-safe defaults** — beam off at startup, on show load, on error, on
-  panel-set change, on any unhandled exception.
-- **Arm as a deliberate act** — a zone starts disarmed; arming is hold-to-fire
-  with confirmation (§6.1.1), never a value a cue can set on its own.
+- `[done]` **Scan-fail blanking.** A stationary beam at full power is the
+  dangerous case. Blanks on point-stream stall, DAC buffer underrun, DAC
+  disconnect, render thread stall, loss of galvo motion and point-rate
+  overrun. Every fault also **disarms**, so recovery needs the fault cleared
+  AND a deliberate re-arm: a beam returning on its own the moment a cable is
+  reseated is exactly what must not happen. The stall is detected by a sweep
+  rather than by arrival, because nothing will arrive to trigger it; and it is
+  measured on frames ARRIVING, not on frames being allowed through, so a
+  disarmed zone being fed is not reported as stalled.
+- `[done]` **Per-zone masks** with hard geometric limits. A point outside the
+  mask is **blanked, not clamped** — clamping would draw a line along the mask
+  boundary, which is content nobody asked for. The geometry is left untouched;
+  only the beam state changes.
+- `[done]` **Per-zone maximum power / attenuation**, applied after all merging,
+  and clamped rather than trusted. Zero power is blanking, not a very dim beam.
+- `[done]` **Audience-scanning zones** flagged distinctly, with independent
+  attenuation that **multiplies** rather than competes — so the normal
+  intensity path can only ever lower it, never raise it. An audience zone also
+  needs an explicit opt-in: armed, masked and at full power it still emits
+  nothing without one, so audience scanning is never an ordinary parameter.
+- `[done]` **Emergency stop** on its own path, independent of playback,
+  blackout and grand master. A **latch**: it cannot be armed around, and it
+  disarms as well as blanks, so clearing the latch alone cannot restore a beam
+  that was live when the button was hit. Recovery is two deliberate acts.
+- `[done]` **Fail-safe defaults** — one `failSafe()` call covering startup,
+  show load, error, panel-set change and unhandled exception, so a new call
+  site cannot implement half of it.
+- `[done]` **Arm as a deliberate act** — a zone starts disarmed; arming is
+  hold-to-fire with confirmation (§6.1.1). Confirming without beginning, or
+  before the hold elapses, arms nothing: a fumbled double-press must not arm a
+  laser. A zone with an unresolved fault cannot arm at all.
 
 `[want]` A safety status panel showing, per projector: armed state, mask
 active, attenuation, scan-fail status, DAC link, point rate vs budget. Visible
@@ -2641,11 +2685,15 @@ DGUV Vorschrift 11 / DIN 56912 for show lasers.
 
 ### 14.8 Staging
 
-1. **Output and safety first.** Helios + Ether Dream, point stream, safety
-   gate, emergency stop, scan-fail blanking, arm/disarm. Nothing renders until
-   blanking is reliable.
+1. **Output and safety first.** `[done]` point stream, safety gate, emergency
+   stop, scan-fail blanking, arm/disarm, masks, attenuation, audience opt-in,
+   fail-safe defaults and the status panel's data. The Helios and Ether Dream
+   **transports** remain: both need the hardware to be worth writing, and
+   `ILaserOutput` cannot be handed anything but a gated frame, so adding one
+   cannot weaken the gate.
 2. **Zones as fixtures** — patch, control attributes, cueable, FX-drivable.
-3. **Point optimiser** — dwell, interpolation, budgeting.
+3. **Point optimiser** — `[done]` corner dwell, blanking dwell, travel
+   interpolation, colour-shift correction, budgeting and decimation.
 4. **Content** — ILDA files, then generated beam effects.
 5. `[later]` Raster-to-path conversion, advanced calibration.
 
@@ -3782,6 +3830,8 @@ Engine and show model, with the command layer as the only mutation path:
 | Undo, redo, scoped undo, action log | §8.6 | built |
 | DMX input, source arbitration, failover | §18.3 | built |
 | Timecode slots, drop-frame, triggers | §18.5 | built |
+| Laser safety gate, un-bypassable by type | §14.6 | built |
+| Laser point optimiser | §14.4 | built |
 
 Not started: rendering (§2 needs a display), bindings and I/O (§12, §18, §19),
 pixel and video (§13), laser (§14), session networking (§18.7), plugins and the

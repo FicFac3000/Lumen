@@ -38,6 +38,7 @@ add_library(lumen_core
   src/Output.cpp
   src/Input.cpp
   src/Timecode.cpp
+  src/Laser.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
 target_compile_options(lumen_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -158,5 +159,11 @@ target_link_libraries(test_input PRIVATE lumen_core SQLite::SQLite3)
 target_include_directories(test_input PRIVATE tests)
 target_compile_options(test_input PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME input COMMAND test_input)
+
+add_executable(test_laser tests/test_laser.cpp)
+target_link_libraries(test_laser PRIVATE lumen_core SQLite::SQLite3)
+target_include_directories(test_laser PRIVATE tests)
+target_compile_options(test_laser PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME laser COMMAND test_laser)
 
 
