@@ -19,6 +19,10 @@ const S = {
   history: [],
   historyAt: -1,
   connected: false,
+  surface: 'chamsys',   // §9: which executor style is on show
+  wingPage: 1,
+  layout: 'Show',
+  editMode: false,
 };
 
 /* ------------------------------------------------------------------ net */
@@ -143,27 +147,14 @@ function buildFixtures(body) {
   if (!st.fixtures.length) body.appendChild(el('div', 'empty', 'Nothing patched.'));
 }
 
-/* §9: the executor surface. */
+/* §9: the executor surface lives in surface.js, which renders both reference
+ * styles from the same state. */
 function buildExecutors(body) {
-  const st = S.state;
-  const grid = el('div', 'tiles');
-  for (const x of st.executors) {
-    const t = el('div', 'tile' + (x.active ? ' live' : ''));
-    t.onclick = () => send('Go ' + x.id);
-    t.oncontextmenu = ev => { ev.preventDefault(); send('Off ' + x.id); };
-    t.appendChild(el('div', 't-name', x.label));
-    t.appendChild(el('div', 't-sub',
-      x.active ? ('cue ' + x.cue + '/' + x.cues) : (x.cues + ' cues')));
-    const bar = el('div', 't-bar');
-    const fill = el('i');
-    fill.style.width = Math.round(x.master * 100) + '%';
-    bar.appendChild(fill);
-    t.appendChild(bar);
-    grid.appendChild(t);
-  }
-  body.appendChild(grid);
-  if (!st.executors.length)
+  if (!S.state.executors.length) {
     body.appendChild(el('div', 'empty', 'No executors. Try: Assign 1 1'));
+    return;
+  }
+  buildExecutorSurface(body);
 }
 
 function buildProgrammer(body) {
@@ -357,8 +348,8 @@ function buildHistory(body) {
 }
 
 const BUILDERS = {
-  Fixtures: { sym: '▦', build: buildFixtures, span: 6, rows: 2 },
-  Executors: { sym: '▶', build: buildExecutors, span: 6 },
+  Fixtures: { sym: '▦', build: buildFixtures, span: 5, rows: 2 },
+  Executors: { sym: '▶', build: buildExecutors, span: 12, rows: 2 },
   Programmer: { sym: '✎', build: buildProgrammer, span: 3 },
   Groups: { sym: '⬡', build: buildGroups, span: 3 },
   Presets: { sym: '◧', build: buildPresets, span: 3 },
@@ -412,6 +403,8 @@ function render() {
     if (!spec) continue;
     let ctx = '';
     if (name === 'Fixtures') ctx = st.programmer.selection.length + ' selected';
+    if (name === 'Executors') ctx = S.surface === 'both' ? 'both styles'
+      : (S.surface === 'ma3' ? 'MA3 canvas' : 'ChamSys wing');
     if (name === 'Output') ctx = st.universes.length + ' universes';
     if (name === 'History') ctx = st.canUndo ? 'undo available' : 'nothing to undo';
     grid.appendChild(win(name, spec.sym, ctx, spec.build, spec.span, spec.rows));

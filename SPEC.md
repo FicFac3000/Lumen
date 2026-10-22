@@ -1629,6 +1629,35 @@ Binds to the existing `Executor` model in the engine (fader, go/back/off).
 | No overlapping tiles | ChamSys | mis-press safety |
 | Live legend via UID | neither | §8 makes it free |
 
+### 9.6 Both styles, rendered
+
+`[done-decision]` §9's split was decided in prose. It is now also **built both
+ways**, rendering from the same executor state, so the decision can be looked
+at rather than argued about — `web/surface.js`, switchable in the Executors
+window and viewable side by side.
+
+What rendering both actually showed:
+
+- **The wing's claim is position permanence**, and it only holds if nothing
+  ever reflows. Empty slots therefore have to be *drawn*, not hidden: the empty
+  one is still a button under a thumb. This is why the side-by-side view makes
+  the wing **scroll** rather than fit — reflowing it to half a screen would
+  quietly destroy the single property it exists to demonstrate.
+- **The canvas's claim is that size carries meaning**, which only holds if a
+  cell is a fixed size in pixels. Fractional columns would make a tile placed
+  at 3×2 a different size on every screen, and a layout that changes shape per
+  screen does not travel with the show (§9.1). The grid is therefore sized in
+  pixels and the canvas scrolls.
+- The two are **not a feature difference**. Every tile in both styles does the
+  same things — Go, Off, master — through the same commands. What differs is
+  only how much the operator is allowed to arrange, which is exactly the trade
+  §9 names.
+
+`[open]` Which becomes the default is still open, and is a question about the
+*user*, not the software: the wing wins for busking a show you did not program,
+the canvas wins for a show you built and will run many times. Both staying is
+plausible — the cost is one layout model, which §9.1 already requires.
+
 ---
 
 ## 10. Popups and presentation modes
@@ -2838,6 +2867,14 @@ the front door. Each is now grammar:
   for the selected fixtures — a position palette on LED pars — is refused with
   that reason, and a *partial* apply reports how many values were skipped,
   because "it half worked" is usually a patching mistake worth seeing.
+- **`ExecMaster <executor> <percent>`** (`xm`), found the same way when the
+  executor surface (§9) needed a fader. The single most-used control on a
+  console had no command form at all. Not undoable, because it is playback
+  rather than an edit (§8.6).
+
+The pattern is worth naming: **each gap was found by building a surface, not
+by reading the code.** Nothing is missing until something has to go through
+the front door.
 
 ### 16.3 Introspection
 
@@ -3905,7 +3942,8 @@ Engine and show model, with the command layer as the only mutation path:
 | Timecode slots, drop-frame, triggers | §18.5 | built |
 | Laser safety gate, un-bypassable by type | §14.6 | built |
 | Laser point optimiser | §14.4 | built |
-| Group selector and preset application as grammar | §16.2.1 | built |
+| Group selector, preset and executor master as grammar | §16.2.1 | built |
+| Executor surface, both reference styles | §9.6 | built |
 | Simulated output, laser and input | §21.3 | built |
 | Local server and browser console | §21.3 | built |
 | Headless UI rendering and interaction tests | §21.3.1 | built |

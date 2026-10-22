@@ -145,7 +145,9 @@ void buildDemoShow(Session& s) {
         e.presets.add(2, std::move(p));
     }
 
-    // Three cues on one sequence, so Go does something visible immediately.
+    // Several sequences of different shapes. One executor tells you nothing
+    // about an executor SURFACE — the question is what a dozen look like
+    // together, at different sizes and with different amounts of live state.
     con.executeAll(
         "Fixture 1 Thru 8 At 60;"
         "Fixture 1 Thru 8 At Red 100;"
@@ -162,7 +164,59 @@ void buildDemoShow(Session& s) {
         "Fixture 201 At 100;"
         "Store Cue 3 1;"
         "ClearAll");
-    con.executeAll("Assign 1 1");
+
+    // A four-step colour chase on the pars.
+    for (int step = 0; step < 4; ++step) {
+        const char* colour[] = {"Red", "Amber", "Green", "Blue"};
+        con.executeAll(std::string("Fixture 1 Thru 8 At 100;Fixture 1 Thru 8 At ") +
+                       colour[step] + " 100;Store Cue " + std::to_string(step + 1) +
+                       " 2;ClearAll");
+    }
+    if (Sequence* chase = e.sequence(2)) {
+        chase->chase = true;
+        chase->chaseRateHz = 2.f;
+    }
+
+    // Mover positions, one cue per spot.
+    {
+        int n = 1;
+        for (const char* spot : {"Home", "Band", "Drums", "Downstage"}) {
+            con.executeAll(std::string("Fixture 101 Thru 104 At 100;"
+                                       "Fixture 101 Thru 104 Preset \"") +
+                           spot + "\";Store Cue " + std::to_string(n++) + " 3;ClearAll");
+        }
+    }
+
+    // A one-cue blinder, the thing a surface needs as a big obvious button.
+    con.executeAll("Fixture 1 Thru 8 At 100;Fixture 1 Thru 8 At White 100;"
+                   "Store Cue 1 4;ClearAll");
+
+    // Pixel bar looks.
+    con.executeAll("Fixture 201 At 100;Store Cue 1 5;ClearAll");
+    con.executeAll("Fixture 201 At 60;Store Cue 2 5;ClearAll");
+
+    // Movers only, low, for a quiet state.
+    con.executeAll("Fixture 101 Thru 104 At 35;Store Cue 1 6;ClearAll");
+
+    const std::pair<int, const char*> names[] = {
+        {1, "Main Looks"}, {2, "Colour Chase"}, {3, "Mover Spots"},
+        {4, "Blinder"},    {5, "Pixel Bar"},    {6, "Low State"}};
+    for (const auto& [id, name] : names)
+        if (Sequence* seq = e.sequence(id)) seq->name = name;
+
+    for (int id = 1; id <= 6; ++id)
+        con.execute("Assign " + std::to_string(id) + " " + std::to_string(id));
+
+    // Labels and fader positions differ, so a surface has something to show
+    // besides "Exec N".
+    const std::pair<int, const char*> labels[] = {
+        {1, "Main Looks"}, {2, "Chase"},  {3, "Spots"},
+        {4, "BLINDER"},    {5, "Pixels"}, {6, "Low"}};
+    for (const auto& [id, label] : labels)
+        if (Executor* x = e.executor(id)) x->label = label;
+    if (Executor* x = e.executor(2)) x->master = 0.65f;
+    if (Executor* x = e.executor(4)) x->master = 1.0f;
+    if (Executor* x = e.executor(6)) x->master = 0.4f;
 
     // A binding set, so the Learn surface has something in it.
     con.execute("BindingSet \"Default\"");
@@ -266,6 +320,29 @@ std::string snapshot(Session& s) {
         j.member("cue", x.active() ? x.currentIndex() + 1 : 0);
         j.member("master", x.master);
         j.member("priority", x.priority);
+
+        // §9.2: a tile shows more as it gets bigger, so the surface needs the
+        // detail available even when the current size does not display it.
+        j.member("chase", seq ? seq->chase : false);
+        j.member("rate", seq && seq->chase ? seq->chaseRateHz : 0.f);
+        j.member("releasing", x.releasing());
+        j.member("fade", x.active() ? x.fadeProgress(e.now()) : 0.0);
+        const int cur = x.currentIndex();
+        const bool haveCur = seq && cur >= 0 && cur < static_cast<int>(seq->cues.size());
+        j.member("cueName", haveCur ? seq->cues[static_cast<size_t>(cur)].name
+                                    : std::string());
+        if (seq && !seq->cues.empty()) {
+            const size_t next = static_cast<size_t>((cur + 1)) %
+                                seq->cues.size();
+            const Cue& n = seq->cues[next];
+            j.member("nextCue", n.number);
+            j.member("nextName", n.name);
+            j.member("nextFade", n.timing.fadeIn);
+        } else {
+            j.key("nextCue").null();
+            j.member("nextName", std::string());
+            j.member("nextFade", 0.0);
+        }
         j.endObject();
     }
     j.endArray();

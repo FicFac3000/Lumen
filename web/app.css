@@ -334,3 +334,139 @@ tr.clickable:hover td { background: rgba(255, 255, 255, 0.04); }
 .zone .z-reason { margin-left: auto; font: 10px var(--mono); color: var(--dimmer); }
 
 .empty { color: var(--dimmer); font-size: 11px; padding: 10px 2px; font-style: italic; }
+
+/* ===================================================================== */
+/* Executor surface — the two reference styles (§9)                      */
+/* ===================================================================== */
+
+.style-pick { display: flex; gap: 6px; margin-bottom: 9px; }
+.style-pick button { font-size: 11px; letter-spacing: 0.4px; }
+
+.wing-pages { display: flex; align-items: center; gap: 5px; margin-bottom: 7px; }
+.wing-pages button { font: 10px var(--mono); padding: 4px 9px; letter-spacing: 0.6px; }
+.wing-hint { margin-left: auto; font: 10px var(--mono); color: var(--dimmer); }
+
+/* Tile colour is a VIEW of the assigned object (§9.2), never typed. */
+[data-hue=chase]    { --hue: var(--violet); }
+[data-hue=blinder]  { --hue: #ffffff; }
+[data-hue=position] { --hue: var(--blue); }
+[data-hue=pixel]    { --hue: #41d9c7; }
+[data-hue=colour]   { --hue: #ff7bc4; }
+[data-hue=default]  { --hue: var(--accent); }
+
+/* ------------------------------------------------- ChamSys: fixed wing */
+/* Ten columns, never fewer, never reflowed. An empty slot is still drawn,
+ * because position being permanent is the entire bargain of this style. */
+.wing {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+}
+.wing-cell {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  min-height: 78px;
+  padding: 5px 6px 5px 7px;
+  cursor: pointer;
+  overflow: hidden;
+  border-left: 3px solid var(--hue, var(--line));
+}
+.wing-cell:hover { background: #222831; }
+.wing-cell.empty {
+  cursor: default;
+  background: repeating-linear-gradient(135deg, #111419 0 6px, #0e1116 6px 12px);
+  border-left-color: var(--line);
+}
+.wing-cell.empty:hover { background: repeating-linear-gradient(135deg, #111419 0 6px, #0e1116 6px 12px); }
+.wing-cell.live { background: rgba(61, 220, 132, 0.1); border-color: var(--live); }
+.w-num { position: absolute; top: 3px; right: 11px; font: 9px var(--mono); color: var(--dimmer); }
+.w-name {
+  font-size: 11px; font-weight: 600; line-height: 1.2;
+  margin-top: 8px; padding-right: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.w-sub { font: 9px var(--mono); color: var(--dim); margin-top: 2px; letter-spacing: 0.3px; }
+.w-rate { font: 9px var(--mono); color: var(--violet); }
+
+.wing-go { display: flex; gap: 5px; margin-top: 7px; }
+.wing-go button { flex: 1; font: 600 11px var(--mono); letter-spacing: 1px; padding: 8px; }
+
+/* The fader: a vertical strip down the right of every tile. */
+.x-fader {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 7px;
+  background: var(--line-soft); cursor: pointer;
+}
+.x-fader i {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: var(--hue, var(--dim)); opacity: 0.75;
+}
+.x-fader:hover i { opacity: 1; }
+
+/* ---------------------------------------------------- MA3: free canvas */
+.canvas {
+  /* A layout grid has a CELL SIZE, not fractional columns: a tile placed at
+   * 3x2 must be the same size on every screen, or a layout stops travelling
+   * with the show. The canvas scrolls instead of stretching. */
+  display: grid;
+  grid-template-columns: repeat(12, 104px);
+  grid-auto-rows: 46px;
+  justify-content: start;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.canvas.editing {
+  background-image:
+    linear-gradient(to right, rgba(255,255,255,0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.05) 1px, transparent 1px);
+  background-size: 108px 50px;
+  outline: 1px dashed var(--line);
+  outline-offset: 3px;
+}
+.c-tile {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-2);
+  padding: 5px 12px 5px 8px;
+  cursor: pointer;
+  overflow: hidden;
+  display: flex; flex-direction: column; gap: 2px;
+  border-left: 3px solid var(--hue, var(--line));
+}
+.c-tile:hover { background: #222831; }
+.c-tile.live { background: rgba(61, 220, 132, 0.1); border-color: var(--live); }
+.canvas.editing .c-tile { outline: 1px solid rgba(255,177,59,0.35); }
+.c-head { display: flex; align-items: center; gap: 6px; }
+.c-sym { color: var(--hue, var(--accent)); font-size: 11px; }
+.c-name {
+  font-size: 11px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.c-state { font: 10px var(--mono); color: var(--dim); }
+.c-next { font: 9px var(--mono); color: var(--dimmer); }
+.c-prog { height: 2px; background: var(--line); border-radius: 1px; margin-top: auto; }
+.c-prog i { display: block; height: 100%; background: var(--live); border-radius: 1px; }
+
+.clash {
+  margin-top: 8px; padding: 7px 10px;
+  border: 1px solid var(--warn); border-radius: var(--radius);
+  color: #ffd9d4; font: 10px var(--mono);
+}
+
+/* ------------------------------------------------------- side by side */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.half { min-width: 0; }
+.half-label {
+  font: 10px var(--mono); color: var(--accent);
+  text-transform: uppercase; letter-spacing: 1px;
+  padding-bottom: 5px; margin-bottom: 7px;
+  border-bottom: 1px solid var(--line);
+}
+/* Ten columns do not fit in half a screen, so the wing SCROLLS rather than
+ * reflowing — reflowing would quietly destroy the property being shown. */
+.split .wing { grid-template-columns: repeat(10, minmax(64px, 1fr)); }
+.split .half { overflow-x: auto; }

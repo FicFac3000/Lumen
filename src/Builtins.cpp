@@ -448,6 +448,27 @@ void Console::installBuiltins() {
                                 std::to_string(static_cast<int>(ctx.number(0, 100))) + "%");
         }});
 
+    // The executor fader. The single most-used control on a console, and it
+    // had no command form until the surface needed one — the same §16.2.1
+    // gap as Group and Preset, found the same way.
+    registry_.add({
+        "ExecMaster", {"xm"},
+        {{"executor", ParamType::Int, true, "executor id"},
+         {"value", ParamType::Percent, true, "0-100"}},
+        Privilege::Operator, false, false,
+        "Sets an executor's master fader. Not undoable: it is playback, not "
+        "an edit (SPEC 8.6).",
+        [](Context& ctx) -> Result {
+            const int id = static_cast<int>(ctx.number(0, 0));
+            Executor* x = ctx.engine.executor(id);
+            if (!x) return Result::bad("no executor " + std::to_string(id));
+            if (!ctx.arg(1) || !ctx.arg(1)->isNumber)
+                return Result::bad("expected a value");
+            x->master = pct(ctx.number(1, 100));
+            return Result::good("executor " + std::to_string(id) + " master " +
+                                std::to_string(static_cast<int>(ctx.number(1, 100))) + "%");
+        }});
+
     registry_.add({
         "Blackout", {"bo"},
         {{"state", ParamType::Bool, false, "on or off; toggles if omitted"}},

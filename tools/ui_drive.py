@@ -119,6 +119,50 @@ async def main(out):
         laser_open = await pg.locator(".win >> text=LASER").count()
         results.append((laser_open > 0, "Laser window appears", f"{laser_open} match"))
 
+        # ---- the executor surface, in both styles (§9) -------------------
+        # Both render from the same state, so whatever works in one must work
+        # in the other. That is the point of having both.
+        for style, cls in [("ChamSys wing", ".wing-cell"), ("MA3 canvas", ".c-tile")]:
+            await pg.click(f".style-pick >> text={style}")
+            await pg.wait_for_timeout(500)
+            n = await pg.locator(cls).count()
+            results.append((n > 0, f"{style} renders", f"{n} tiles"))
+
+            # A tile must Go its executor.
+            cmd("Off 1")
+            await pg.wait_for_timeout(400)
+            await pg.locator(f"{cls}:has-text('Main Looks')").first.click()
+            await pg.wait_for_timeout(700)
+            live = next((x for x in state()["executors"] if x["id"] == 1), None)
+            results.append((bool(live and live["active"]),
+                            f"{style}: tile Go", "executor 1 active"))
+
+            # The fader strip must set the master, through the command layer.
+            cmd("ExecMaster 1 100")
+            await pg.wait_for_timeout(400)
+            box = await pg.locator(
+                f"{cls}:has-text('Main Looks') .x-fader").first.bounding_box()
+            await pg.mouse.click(box["x"] + box["width"] / 2,
+                                 box["y"] + box["height"] * 0.75)
+            await pg.wait_for_timeout(700)
+            m = next(x["master"] for x in state()["executors"] if x["id"] == 1)
+            results.append((0.15 < m < 0.45, f"{style}: fader sets master",
+                            f"master {m:.2f}"))
+
+        # Side by side must show both, and the wing must NOT reflow to fit —
+        # reflowing would destroy the one property it exists to demonstrate.
+        await pg.click(".style-pick >> text=Side by side")
+        await pg.wait_for_timeout(600)
+        wings = await pg.locator(".wing-cell").count()
+        tiles = await pg.locator(".c-tile").count()
+        results.append((wings == 20 and tiles > 0, "side by side shows both",
+                        f"{wings} wing slots, {tiles} canvas tiles"))
+
+        # §9.1: no two tiles may overlap on the canvas.
+        clash = await pg.locator(".clash").count()
+        results.append((clash == 0, "canvas has no overlapping tiles",
+                        "none" if clash == 0 else "overlap reported"))
+
         cmd("GrandMaster 100")
         await pg.wait_for_timeout(600)
         await pg.screenshot(path=out, full_page=False)
