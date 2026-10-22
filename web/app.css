@@ -406,6 +406,7 @@ tr.clickable:hover td { background: rgba(255, 255, 255, 0.04); }
 
 /* ---------------------------------------------------- MA3: free canvas */
 .canvas {
+  position: relative;   /* the drag ghost is placed against this */
   /* A layout grid has a CELL SIZE, not fractional columns: a tile placed at
    * 3x2 must be the same size on every screen, or a layout stops travelling
    * with the show. The canvas scrolls instead of stretching. */
@@ -470,3 +471,44 @@ tr.clickable:hover td { background: rgba(255, 255, 255, 0.04); }
  * reflowing — reflowing would quietly destroy the property being shown. */
 .split .wing { grid-template-columns: repeat(10, minmax(64px, 1fr)); }
 .split .half { overflow-x: auto; }
+
+
+/* ------------------------------------------------- canvas editing (§9.4) */
+/* The drag ghost. The real tile stays put until the engine accepts the move,
+ * so what is dragged is a preview and the page never shows a position the
+ * model does not hold. */
+.ghost {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  border-radius: 5px;
+  background: rgba(255, 177, 59, 0.16);
+}
+/* Refusal shown DURING the drag, not on drop: by drop the gesture is already
+ * committed, and being told no then is being told off. */
+.ghost.bad {
+  border-color: var(--warn);
+  border-style: dashed;
+  background: rgba(255, 107, 90, 0.16);
+}
+
+.canvas.editing .c-tile { cursor: grab; }
+.canvas.editing .c-tile:active { cursor: grabbing; }
+.c-tile.picked { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The resize grip, bottom-right, only in edit mode. */
+.grip {
+  position: absolute;
+  right: 8px; bottom: 2px;
+  width: 12px; height: 12px;
+  cursor: nwse-resize;
+  background:
+    linear-gradient(135deg, transparent 50%, var(--dim) 50%, var(--dim) 60%,
+                    transparent 60%, transparent 75%, var(--dim) 75%,
+                    var(--dim) 85%, transparent 85%);
+  opacity: 0.6;
+}
+.grip:hover { opacity: 1; }
+
+.wing-pages button:disabled { opacity: 0.35; cursor: not-allowed; }

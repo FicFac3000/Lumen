@@ -1692,6 +1692,53 @@ coming back gives 1×1 tiles in the right places. There is no hidden copy of the
 old geometry, deliberately — a surface that silently remembered a shape it is
 no longer showing is a worse surprise than one that forgot.
 
+### 9.8 Arranging the canvas
+
+`[done-decision]` A free canvas is only usable if arranging it is quick, so
+§9.1's alignment helpers are built rather than deferred. Three things about
+how, each decided by a failure it prevents:
+
+**Refusal happens during the drag, not on the drop.** The engine refuses an
+overlapping placement (§9.1), but refusing when the pointer is released is too
+late: the gesture is already committed, and being told no then reads as being
+told off. The drag therefore carries a ghost that turns red the moment the
+position under it would not be accepted, using the same rule the engine
+applies. The engine still decides — the preview only avoids asking a question
+whose answer is visibly no.
+
+**Alignment is computed as a whole arrangement and applied all or nothing.**
+Moving tiles one at a time accepts the first three and fails the fourth,
+leaving the page in a shape nobody chose and that the operator now has to
+reason about before they can undo it. So the proposed arrangement is checked
+entire — against every tile on the page, not only the selected ones — and
+either lands or does not.
+
+**Selection order is information.** "Match width" takes its width from the
+*first* tile picked, not the widest, because "make these like that one" needs
+*that one* to be something the operator chose rather than something the
+geometry decided. Shift-adding appends; re-picking an already-selected tile
+does not reorder.
+
+Run mode (§9.4) is enforced at the **command layer**, not in the interface. A
+lock only the UI respects is not a lock: a macro, a plugin or the agent would
+walk straight through it. `TileMove` and `Align` refuse on a page in run mode
+and say which command unlocks it. The mode is per page, and a show saved in
+edit mode **reopens in run mode** — the safe state is the one a file restores
+you to.
+
+| Command | Does |
+|---|---|
+| `EditMode [on\|off] [page]` | unlocks a page for arranging |
+| `TileMove <slot> <col> <row> [w] [h]` | moves or resizes; refuses an overlap |
+| `TileSelect [slots…]` | selects tiles, in order; bare clears |
+| `Align <how>` | left, right, top, bottom, matchwidth, matchheight, spreadh, spreadv, fillrow |
+
+`[flag]` A canvas tile's slot is its top-left cell, so **a tile's slot changes
+when it moves**. That is fine for the UI, which knows where it just dragged
+from, and awkward for a person typing two moves in a row. Mitigated for now by
+naming the occupied slots in the error rather than only saying "not there";
+worth revisiting if addressing tiles by hand turns out to be common.
+
 `[open]` Which page a *new show* starts on. Neither is obviously right, and it
 is a question about the user rather than the software: the wing wins for
 busking a show you did not program, the canvas for a show you built and will
@@ -3877,6 +3924,8 @@ Specced lightly or not at all, and worth a pass before M3:
 - **Encoder detail** — acceleration curves, fine mode, snap to ChannelSet
   boundaries (§7.2)
 - *(Undo model now specced and built — §8.6)*
+- **Surface editing is not undoable yet** — §8.6's history covers the
+  programmer and the patch, but moving a tile is an edit and should be in it
 
 ### 21.2 ChamSys `.hed` import — blocked
 
@@ -3985,6 +4034,7 @@ Engine and show model, with the command layer as the only mutation path:
 | Group selector, preset and executor master as grammar | §16.2.1 | built |
 | Executor surface, both styles, as pages | §9.6 | built |
 | Page style conversion, with a loss report | §9.7 | built |
+| Canvas drag, resize, alignment, run/edit lock | §9.8 | built |
 | Surfaces and tiles in the show file | §9.6, §17.7 | built |
 | Simulated output, laser and input | §21.3 | built |
 | Local server and browser console | §21.3 | built |

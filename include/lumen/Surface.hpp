@@ -79,6 +79,11 @@ struct Surface {
     SurfaceStyle style = SurfaceStyle::Wing;
     int cols = 10;
     int rows = 2;
+    // §9.4: run mode is the default, and in run mode tiles cannot be moved,
+    // resized or reassigned — only operated. Per page, so a prep layout can
+    // stay editable while the show surface is locked. Enforced at the command
+    // layer, not in the UI: a lock only the interface respects is not a lock.
+    bool editMode = false;
     std::vector<Tile> tiles;
 
     int slotCount() const { return cols * rows; }
@@ -163,6 +168,35 @@ public:
     ConvertReport setStyle(int surfaceId, SurfaceStyle to, bool force,
                            std::string* err = nullptr);
 
+    // Selection and alignment (§9.1) ---------------------------------------
+    // Alignment needs something to align, and "the tiles I dragged a box
+    // round" is the only answer an operator will accept. Selection is per
+    // page, because tiles on another page are not on screen to be aligned.
+    void select(int surfaceId, const std::vector<Uid>& tiles);
+    void selectAlso(int surfaceId, Uid tile);
+    void deselect(int surfaceId);
+    const std::vector<Uid>& selection(int surfaceId) const;
+
+    enum class Align : uint8_t {
+        Left, Right, Top, Bottom,      // edges
+        MatchWidth, MatchHeight,       // sizes, taken from the first selected
+        SpreadH, SpreadV,              // even gaps between them
+        FillRow,                       // share one row's width equally
+    };
+    static const char* alignName(Align a);
+    static std::optional<Align> alignFromName(const std::string& s);
+
+    // Alignment is computed as a WHOLE ARRANGEMENT and applied all or
+    // nothing. Applying tile by tile would leave a page half-aligned when the
+    // fourth move collides, which is worse than not having aligned at all:
+    // the operator would have to undo a change they cannot see the shape of.
+    struct AlignResult {
+        bool ok = false;
+        int moved = 0;
+        std::string error;
+    };
+    AlignResult align(int surfaceId, Align how);
+
     // Validation (§9.1) ----------------------------------------------------
     // Overlapping tiles on a canvas, or two tiles in one wing slot. Returns
     // the offending pairs as text, empty when the page is sound.
@@ -170,10 +204,14 @@ public:
 
 private:
     Surface* mutableById(int id);
+    // Applies a proposed arrangement only if the whole of it is sound.
+    AlignResult commitArrangement(Surface& s,
+                                  const std::vector<std::pair<Uid, Rect>>& want);
 
     UidGen* uids_;
     std::deque<Surface> surfaces_;   // deque: references survive growth
     int current_ = 0;
+    std::vector<std::pair<int, std::vector<Uid>>> selected_;
 };
 
 // A sensible starting pair, which is what "keep both" means in practice: a

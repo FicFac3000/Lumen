@@ -387,6 +387,7 @@ std::string snapshot(Session& s) {
         j.member("style", surfaceStyleName(sf.style));
         j.member("cols", sf.cols);
         j.member("rows", sf.rows);
+        j.member("editMode", sf.editMode);
         j.key("tiles").beginArray();
         for (const Tile& t : sf.tiles) {
             j.beginObject();
@@ -397,6 +398,10 @@ std::string snapshot(Session& s) {
             j.member("w", t.rect.w);
             j.member("h", t.rect.h);
             j.member("legend", t.legendOverride);
+            bool sel = false;
+            for (Uid u : e.surfaces.selection(sf.id))
+                if (u == t.uid) sel = true;
+            j.member("selected", sel);
             // The tile stores a UID; the UI resolves it to whatever that
             // object is called NOW (§9.2), so a rename needs nothing here.
             int execId = 0;

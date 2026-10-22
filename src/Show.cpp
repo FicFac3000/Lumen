@@ -410,7 +410,7 @@ CREATE TABLE IF NOT EXISTS binding (
 CREATE TABLE IF NOT EXISTS surface (
   uid INTEGER PRIMARY KEY, sid INTEGER NOT NULL, name TEXT NOT NULL,
   style INTEGER NOT NULL, cols INTEGER NOT NULL, rows INTEGER NOT NULL,
-  ord INTEGER NOT NULL);
+  edit_mode INTEGER NOT NULL DEFAULT 0, ord INTEGER NOT NULL);
 
 -- A tile stores the assigned object's UID, never a copy of its name or
 -- colour (SPEC 8.1, 9.2): the legend is a view, so a rename needs no
@@ -1198,8 +1198,8 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
 
     // --- executor surfaces (§9.6) -----------------------------------------
     {
-        Stmt su(db, "INSERT INTO surface(uid,sid,name,style,cols,rows,ord) "
-                    "VALUES(?,?,?,?,?,?,?)");
+        Stmt su(db, "INSERT INTO surface(uid,sid,name,style,cols,rows,edit_mode,ord) "
+                    "VALUES(?,?,?,?,?,?,?,?)");
         Stmt ti(db, "INSERT INTO surface_tile(uid,surface_uid,kind,target,slot,"
                     "x,y,w,h,legend,colour,symbol,ord) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
@@ -1214,7 +1214,10 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
               .bind(4, static_cast<int>(sf.style))
               .bind(5, sf.cols)
               .bind(6, sf.rows)
-              .bind(7, ord++);
+              // A surface saved in edit mode reopens in RUN mode: the safe
+              // state is the one a show file restores you to.
+              .bind(7, 0)
+              .bind(8, ord++);
             if (!su.run()) return fail("write surface");
 
             int tord = 0;

@@ -20,7 +20,7 @@ const S = {
   historyAt: -1,
   connected: false,
   both: false,          // §9.6: show every surface page at once
-  editMode: false,      // §9.4: edit mode vs run mode, per surface
+  dragging: false,      // a drag owns the canvas until it finishes
 };
 
 /* ------------------------------------------------------------------ net */
@@ -395,6 +395,8 @@ function render() {
   // only while something in it is being touched.
   if (grid.contains(document.activeElement) &&
       document.activeElement.tagName === 'INPUT') return;
+  // A redraw mid-drag would delete the element under the pointer.
+  if (S.dragging) return;
   grid.innerHTML = '';
   for (const name of S.open) {
     const spec = BUILDERS[name];

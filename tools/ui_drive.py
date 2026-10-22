@@ -203,6 +203,87 @@ async def main(out):
                         "side by side shows both pages",
                         f"{halves} halves, {wings} wing slots"))
 
+        # ---- canvas editing (§9.1, §9.4) ---------------------------------
+        await pg.click(".style-pick >> text=Show · canvas")
+        await pg.wait_for_timeout(600)
+
+        # Run mode is the default and the engine enforces it, so a move sent
+        # while locked must be refused at the command layer, not just greyed
+        # out in the UI.
+        cmd("EditMode off 2")
+        await pg.wait_for_timeout(400)
+        locked = state()["surfaces"][1]["tiles"][0]
+        import urllib.error
+        req = urllib.request.Request(
+            BASE + "/cmd", data=b"TileMove 1 2 4", method="POST")
+        with urllib.request.urlopen(req) as r:
+            reply = json.load(r)
+        results.append((reply["ok"] is False and "run mode" in reply["message"],
+                        "run mode refuses a move", reply["message"][:46]))
+        still = state()["surfaces"][1]["tiles"][0]
+        results.append((still["x"] == locked["x"] and still["y"] == locked["y"],
+                        "and the tile did not move",
+                        f'at {still["x"]},{still["y"]}'))
+
+        # Edit mode is a command too, and the button is a view of the page.
+        await pg.click(".canvas ~ * >> nth=0") if False else None
+        await pg.click(".wing-pages >> text=RUN")
+        await pg.wait_for_timeout(700)
+        results.append((state()["surfaces"][1]["editMode"] is True,
+                        "the mode button is a command", "page 2 in edit mode"))
+
+        # Drag a tile two rows down. The ghost previews, the engine commits.
+        tiles = pg.locator(".c-tile")
+        before = state()["surfaces"][1]["tiles"]
+        first = sorted(before, key=lambda t: (t["y"], t["x"]))[0]
+        box = await tiles.nth(0).bounding_box()
+        await pg.mouse.move(box["x"] + 40, box["y"] + 12)
+        await pg.mouse.down()
+        await pg.mouse.move(box["x"] + 40, box["y"] + 12 + 4 * 50, steps=10)
+        ghost = await pg.locator(".ghost").count()
+        results.append((ghost == 1, "a drag shows a ghost", f"{ghost} ghost"))
+        await pg.mouse.up()
+        await pg.wait_for_timeout(900)
+        after = state()["surfaces"][1]["tiles"]
+        moved = [t for t in after if t["y"] != first["y"]]
+        results.append((len(moved) > 0, "drag moves the tile",
+                        f'{len(moved)} tile(s) in a new row'))
+
+        # A drag onto an occupied cell must be refused BEFORE the drop, and
+        # must leave the page exactly as it was.
+        snapshot_before = [(t["x"], t["y"], t["w"], t["h"]) for t in state()["surfaces"][1]["tiles"]]
+        b0 = await tiles.nth(1).bounding_box()
+        b1 = await tiles.nth(2).bounding_box()
+        await pg.mouse.move(b0["x"] + 40, b0["y"] + 12)
+        await pg.mouse.down()
+        await pg.mouse.move(b1["x"] + 40, b1["y"] + 12, steps=10)
+        bad = await pg.locator(".ghost.bad").count()
+        results.append((bad == 1, "an overlapping drag is marked before the drop",
+                        "ghost turns red"))
+        await pg.mouse.up()
+        await pg.wait_for_timeout(800)
+        snapshot_after = [(t["x"], t["y"], t["w"], t["h"]) for t in state()["surfaces"][1]["tiles"]]
+        results.append((snapshot_before == snapshot_after,
+                        "and nothing moved", "page unchanged"))
+
+        # Alignment: select two tiles and align. Applied all or nothing.
+        await tiles.nth(0).click()
+        await pg.wait_for_timeout(500)
+        await tiles.nth(1).click(modifiers=["Shift"])
+        await pg.wait_for_timeout(600)
+        sel = [t for t in state()["surfaces"][1]["tiles"] if t["selected"]]
+        results.append((len(sel) == 2, "shift-click adds to the selection",
+                        f"{len(sel)} selected"))
+        await pg.click(".wing-pages >> text=Match W")
+        await pg.wait_for_timeout(800)
+        widths = {t["w"] for t in state()["surfaces"][1]["tiles"] if t["selected"]}
+        results.append((len(widths) == 1, "match width makes them one width",
+                        f"widths {widths}"))
+        after_align = state()["surfaces"][1]
+        results.append((not after_align["problems"],
+                        "alignment never leaves an overlap",
+                        "page still valid"))
+
         # §9.1: no two tiles may overlap on the canvas.
         clash = await pg.locator(".clash").count()
         results.append((clash == 0, "canvas has no overlapping tiles",

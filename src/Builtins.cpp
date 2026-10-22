@@ -34,6 +34,23 @@ std::string plural(size_t n, const char* one, const char* many) {
     return std::to_string(n) + " " + (n == 1 ? one : many);
 }
 
+// A canvas tile's slot is derived from its position, so it changes whenever
+// the tile moves. An error that just says "not there" sends the operator
+// hunting; one that lists where the tiles are is the next command.
+std::string occupiedSlots(const Surface& s) {
+    if (s.tiles.empty()) return " (this page has no tiles)";
+    std::vector<int> slots;
+    for (const Tile& t : s.tiles) slots.push_back(t.slot + 1);
+    std::sort(slots.begin(), slots.end());
+    std::string out = " (tiles are at ";
+    for (size_t i = 0; i < slots.size(); ++i) {
+        if (i) out += ", ";
+        if (i == 8) { out += "…"; break; }
+        out += std::to_string(slots[i]);
+    }
+    return out + ")";
+}
+
 // Cue numbers are decimals but almost always whole ones. `std::to_string`
 // would report cue 4 as "4.000000", which looks like a bug to the operator
 // reading the command line.
@@ -565,6 +582,136 @@ void Console::installBuiltins() {
             return Result::good(std::string(tileKindName(*kind)) + " " +
                                 std::to_string(targetId) + " on slot " +
                                 std::to_string(slot + 1));
+        }});
+
+    registry_.add({
+        "EditMode", {},
+        {{"state", ParamType::Bool, false, "on or off; toggles if omitted"},
+         {"page", ParamType::Int, false, "page id; the current one if omitted"}},
+        Privilege::Operator, false, false,
+        "Unlocks a surface page for arranging. Run mode is the default and "
+        "tiles cannot be moved in it (SPEC 9.4).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.surfaces;
+            const int id = ctx.arg(1) ? static_cast<int>(ctx.number(1, 0))
+                                      : store.current();
+            Surface* sf = store.byId(id);
+            if (!sf) return Result::bad("no surface page " + std::to_string(id));
+            const std::string st = ctx.text(0);
+            if (st.empty()) sf->editMode = !sf->editMode;
+            else sf->editMode = (st == "on" || st == "On" || st == "1");
+            return Result::good("page " + std::to_string(id) + " is in " +
+                                (sf->editMode ? "edit" : "run") + " mode");
+        }});
+
+    registry_.add({
+        "TileMove", {},
+        {{"slot", ParamType::Int, true, "the tile's current slot, 1-based"},
+         {"column", ParamType::Int, true, "destination column, 1-based"},
+         {"row", ParamType::Int, true, "destination row, 1-based"},
+         {"width", ParamType::Int, false, "new width in cells; unchanged if omitted"},
+         {"height", ParamType::Int, false, "new height; unchanged if omitted"}},
+        Privilege::Operator, false, false,
+        "Moves or resizes a tile on a canvas page. Refused if it would "
+        "overlap another tile (SPEC 9.1).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.surfaces;
+            const int page = store.current();
+            Surface* sf = store.byId(page);
+            if (!sf) return Result::bad("no surface page selected");
+            if (sf->style != SurfaceStyle::Canvas)
+                return Result::bad("a wing's slots do not move; use `Tile` to "
+                                   "assign one");
+            // §9.4 enforced here rather than in the UI, because a lock only
+            // the interface respects is not a lock.
+            if (!sf->editMode)
+                return Result::bad("page " + std::to_string(page) +
+                                   " is in run mode — `EditMode on` first");
+
+            const int slot = static_cast<int>(ctx.number(0, 0)) - 1;
+            const Tile* t = sf->atSlot(slot);
+            // A canvas tile's slot is its top-left cell, so moving one changes
+            // its slot. Saying where the tiles actually are turns a dead end
+            // into the next command.
+            if (!t)
+                return Result::bad("no tile at slot " + std::to_string(slot + 1) +
+                                   occupiedSlots(*sf));
+
+            Rect want = t->rect;
+            want.x = static_cast<int>(ctx.number(1, 1)) - 1;
+            want.y = static_cast<int>(ctx.number(2, 1)) - 1;
+            if (ctx.arg(3)) want.w = static_cast<int>(ctx.number(3, want.w));
+            if (ctx.arg(4)) want.h = static_cast<int>(ctx.number(4, want.h));
+
+            const PlaceResult r = store.moveTile(page, t->uid, want);
+            if (!r.ok) return Result::bad(r.error);
+            return Result::good("tile moved to " + std::to_string(want.x + 1) + "," +
+                                std::to_string(want.y + 1) + " at " +
+                                std::to_string(want.w) + "x" + std::to_string(want.h));
+        }});
+
+    registry_.add({
+        "TileSelect", {"tsel"},
+        {{"slot", ParamType::Targets, false, "slots to select; clears if omitted"}},
+        Privilege::Operator, false, true,
+        "Selects tiles on the current page for alignment. Selection ORDER "
+        "matters: match-width takes its width from the first (SPEC 9.1).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.surfaces;
+            const int page = store.current();
+            Surface* sf = store.byId(page);
+            if (!sf) return Result::bad("no surface page selected");
+
+            // Slots arrive as plain arguments: `TileSelect 1 4 7`, or with
+            // the `+` the rest of the grammar uses, which the tokeniser drops
+            // between numbers. Either reads naturally at a console.
+            if (ctx.args.empty()) {
+                store.deselect(page);
+                return Result::good("tile selection cleared");
+            }
+            std::vector<Uid> picked;
+            for (const Arg& a : ctx.args) {
+                if (!a.isNumber) continue;
+                const int slot = static_cast<int>(a.number) - 1;
+                const Tile* tile = sf->atSlot(slot);
+                if (!tile)
+                    return Result::bad("no tile at slot " + std::to_string(slot + 1) +
+                                       occupiedSlots(*sf));
+                picked.push_back(tile->uid);
+            }
+            if (picked.empty()) {
+                store.deselect(page);
+                return Result::good("tile selection cleared");
+            }
+            store.select(page, picked);
+            return Result::good(plural(picked.size(), "tile", "tiles") + " selected");
+        }});
+
+    registry_.add({
+        "Align", {},
+        {{"how", ParamType::Enum, true, "how to arrange them",
+          {"left", "right", "top", "bottom", "matchwidth", "matchheight",
+           "spreadh", "spreadv", "fillrow"}}},
+        Privilege::Operator, false, false,
+        "Arranges the selected tiles. Applied all or nothing: a refused "
+        "alignment leaves the page untouched (SPEC 9.1).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.surfaces;
+            const int page = store.current();
+            Surface* sf = store.byId(page);
+            if (!sf) return Result::bad("no surface page selected");
+            if (!sf->editMode)
+                return Result::bad("page " + std::to_string(page) +
+                                   " is in run mode — `EditMode on` first");
+
+            const std::optional<SurfaceStore::Align> how =
+                SurfaceStore::alignFromName(ctx.text(0));
+            if (!how) return Result::bad("unknown alignment: " + ctx.text(0));
+
+            const SurfaceStore::AlignResult r = store.align(page, *how);
+            if (!r.ok) return Result::bad(r.error);
+            return Result::good(plural(static_cast<size_t>(r.moved), "tile", "tiles") +
+                                " moved");
         }});
 
     // The executor fader. The single most-used control on a console, and it

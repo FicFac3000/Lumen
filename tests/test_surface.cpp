@@ -5,6 +5,7 @@
 
 #include "lumen/Surface.hpp"
 
+#include <algorithm>
 #include <cstdio>
 
 using namespace lumen;
@@ -305,6 +306,134 @@ void testStoreKeepsBoth() {
     CHECK(store.byId(2)->uid.valid());
 }
 
+// Alignment is the operation that makes a free canvas usable instead of
+// merely possible. The thing it must never do is half-happen.
+void testAlignmentIsAtomic() {
+    Fix f;
+    f.canvas(12, 8);
+    f.store.placeAt(2, Rect{0, 0, 2, 1}, TileKind::Executor, f.a);
+    f.store.placeAt(2, Rect{4, 2, 3, 1}, TileKind::Executor, f.b);
+    f.store.placeAt(2, Rect{8, 4, 2, 1}, TileKind::Executor, f.c);
+    Surface* s = f.store.byId(2);
+    const Uid t0 = s->tiles[0].uid, t1 = s->tiles[1].uid, t2 = s->tiles[2].uid;
+
+    // Nothing selected, or one thing: there is no "align" of one tile.
+    CHECK(!f.store.align(2, SurfaceStore::Align::Left).ok);
+    f.store.select(2, {t0});
+    const SurfaceStore::AlignResult one = f.store.align(2, SurfaceStore::Align::Left);
+    CHECK(!one.ok);
+    CHECK(one.error.find("at least two") != std::string::npos);
+
+    // Align left: every selected tile takes the leftmost x. These are in
+    // different rows, so nothing collides.
+    f.store.select(2, {t0, t1, t2});
+    const SurfaceStore::AlignResult left = f.store.align(2, SurfaceStore::Align::Left);
+    CHECK(left.ok);
+    CHECK_EQ(left.moved, 2);
+    for (const Tile& t : f.store.byId(2)->tiles) CHECK_EQ(t.rect.x, 0);
+
+    // Match width takes its width from the FIRST selected, not the widest:
+    // "make these like that one" needs `that one` to be a choice.
+    f.store.select(2, {t1, t0, t2});       // t1 is 3 wide
+    CHECK(f.store.align(2, SurfaceStore::Align::MatchWidth).ok);
+    for (const Tile& t : f.store.byId(2)->tiles) CHECK_EQ(t.rect.w, 3);
+
+    // Align top would stack all three in one row at x=0 — three 3-wide tiles
+    // in the same place. Refused, and NOTHING moves: a half-aligned page is
+    // worse than one that did not align, because its shape is one nobody
+    // chose.
+    std::vector<Rect> before;
+    for (const Tile& t : f.store.byId(2)->tiles) before.push_back(t.rect);
+
+    const SurfaceStore::AlignResult bad = f.store.align(2, SurfaceStore::Align::Top);
+    CHECK(!bad.ok);
+    CHECK(bad.error.find("overlap") != std::string::npos);
+    CHECK_EQ(bad.moved, 0);
+    for (size_t i = 0; i < before.size(); ++i)
+        CHECK(f.store.byId(2)->tiles[i].rect == before[i]);
+    CHECK(f.store.validate(2).empty());
+}
+
+void testSpreadAndFill() {
+    Fix f;
+    f.canvas(12, 8);
+    f.store.placeAt(2, Rect{0, 0, 2, 1}, TileKind::Executor, f.a);
+    f.store.placeAt(2, Rect{3, 0, 2, 1}, TileKind::Executor, f.b);
+    f.store.placeAt(2, Rect{10, 0, 2, 1}, TileKind::Executor, f.c);
+    Surface* s = f.store.byId(2);
+    f.store.select(2, {s->tiles[0].uid, s->tiles[1].uid, s->tiles[2].uid});
+
+    // Spread keeps the outermost two where they are and evens the gaps.
+    CHECK(f.store.align(2, SurfaceStore::Align::SpreadH).ok);
+    s = f.store.byId(2);
+    CHECK_EQ(s->tiles[0].rect.x, 0);
+    CHECK_EQ(s->tiles[2].rect.right(), 12);
+    const int gap1 = s->tiles[1].rect.x - s->tiles[0].rect.right();
+    const int gap2 = s->tiles[2].rect.x - s->tiles[1].rect.right();
+    CHECK_EQ(gap1, gap2);
+    CHECK(f.store.validate(2).empty());
+
+    // Fill row shares the full width, remainder to the left, ending flush.
+    CHECK(f.store.align(2, SurfaceStore::Align::FillRow).ok);
+    s = f.store.byId(2);
+    int total = 0;
+    for (const Tile& t : s->tiles) total += t.rect.w;
+    CHECK_EQ(total, 12);
+    CHECK_EQ(s->tiles[0].rect.x, 0);
+    // Sorted left to right, the row is contiguous with no gaps.
+    std::vector<Rect> row;
+    for (const Tile& t : s->tiles) row.push_back(t.rect);
+    std::sort(row.begin(), row.end(), [](const Rect& a, const Rect& b) { return a.x < b.x; });
+    for (size_t i = 1; i < row.size(); ++i) CHECK_EQ(row[i].x, row[i - 1].right());
+    CHECK_EQ(row.back().right(), 12);
+    CHECK(f.store.validate(2).empty());
+}
+
+void testAlignmentRefusedOnAWing() {
+    Fix f;
+    f.wing();
+    f.store.placeInSlot(1, 0, TileKind::Executor, f.a);
+    f.store.placeInSlot(1, 1, TileKind::Executor, f.b);
+    Surface* s = f.store.byId(1);
+    f.store.select(1, {s->tiles[0].uid, s->tiles[1].uid});
+
+    // A wing's slots do not move. Pretending to align them would suggest it
+    // is arrangeable when not being arrangeable is the entire point.
+    const SurfaceStore::AlignResult r = f.store.align(1, SurfaceStore::Align::Left);
+    CHECK(!r.ok);
+    CHECK(r.error.find("wing") != std::string::npos);
+}
+
+void testSelectionIsPerPageAndOrdered() {
+    Fix f;
+    f.wing();
+    f.canvas();
+    f.store.placeInSlot(1, 0, TileKind::Executor, f.a);
+    f.store.placeAt(2, Rect{0, 0, 1, 1}, TileKind::Executor, f.b);
+    const Uid wingTile = f.store.byId(1)->tiles[0].uid;
+    const Uid canvasTile = f.store.byId(2)->tiles[0].uid;
+
+    f.store.select(1, {wingTile});
+    f.store.select(2, {canvasTile});
+    CHECK_EQ(f.store.selection(1).size(), size_t(1));
+    CHECK(f.store.selection(1)[0] == wingTile);
+    CHECK(f.store.selection(2)[0] == canvasTile);
+    // A page nobody has selected on has an empty selection, not a missing one.
+    CHECK(f.store.selection(99).empty());
+
+    // Re-picking an already-selected tile must not reorder: match-width reads
+    // the first one, so order is information.
+    f.store.selectAlso(2, canvasTile);
+    CHECK_EQ(f.store.selection(2).size(), size_t(1));
+    f.store.selectAlso(2, wingTile);
+    CHECK_EQ(f.store.selection(2).size(), size_t(2));
+    CHECK(f.store.selection(2)[0] == canvasTile);
+
+    f.store.deselect(2);
+    CHECK(f.store.selection(2).empty());
+    CHECK_EQ(f.store.selection(1).size(), size_t(1));
+}
+
 } // namespace
 
 int main() {
@@ -315,6 +444,10 @@ int main() {
     testConversionIsAsymmetric();
     testCanvasToWingReportsItsLosses();
     testResizeAloneDoesNotNeedForcing();
+    testAlignmentIsAtomic();
+    testSpreadAndFill();
+    testAlignmentRefusedOnAWing();
+    testSelectionIsPerPageAndOrdered();
     testValidation();
     testStoreKeepsBoth();
     return check::report("surface");

@@ -376,6 +376,245 @@ ConvertReport SurfaceStore::setStyle(int surfaceId, SurfaceStyle to, bool force,
 }
 
 // ---------------------------------------------------------------------------
+// Selection and alignment (§9.1)
+// ---------------------------------------------------------------------------
+void SurfaceStore::select(int surfaceId, const std::vector<Uid>& tiles) {
+    for (auto& e : selected_)
+        if (e.first == surfaceId) {
+            e.second = tiles;
+            return;
+        }
+    selected_.push_back({surfaceId, tiles});
+}
+
+void SurfaceStore::selectAlso(int surfaceId, Uid tile) {
+    for (auto& e : selected_)
+        if (e.first == surfaceId) {
+            // Selection order is information: "match width" takes its width
+            // from the FIRST one picked, so re-picking must not reorder.
+            for (Uid u : e.second)
+                if (u == tile) return;
+            e.second.push_back(tile);
+            return;
+        }
+    selected_.push_back({surfaceId, {tile}});
+}
+
+void SurfaceStore::deselect(int surfaceId) {
+    for (auto& e : selected_)
+        if (e.first == surfaceId) e.second.clear();
+}
+
+const std::vector<Uid>& SurfaceStore::selection(int surfaceId) const {
+    static const std::vector<Uid> none;
+    for (const auto& e : selected_)
+        if (e.first == surfaceId) return e.second;
+    return none;
+}
+
+const char* SurfaceStore::alignName(Align a) {
+    switch (a) {
+        case Align::Left: return "left";
+        case Align::Right: return "right";
+        case Align::Top: return "top";
+        case Align::Bottom: return "bottom";
+        case Align::MatchWidth: return "matchwidth";
+        case Align::MatchHeight: return "matchheight";
+        case Align::SpreadH: return "spreadh";
+        case Align::SpreadV: return "spreadv";
+        case Align::FillRow: return "fillrow";
+    }
+    return "?";
+}
+
+std::optional<SurfaceStore::Align> SurfaceStore::alignFromName(const std::string& s) {
+    const Align all[] = {Align::Left,       Align::Right,       Align::Top,
+                         Align::Bottom,     Align::MatchWidth,  Align::MatchHeight,
+                         Align::SpreadH,    Align::SpreadV,     Align::FillRow};
+    for (Align a : all)
+        if (s == alignName(a)) return a;
+    return std::nullopt;
+}
+
+SurfaceStore::AlignResult SurfaceStore::commitArrangement(
+    Surface& s, const std::vector<std::pair<Uid, Rect>>& want) {
+    AlignResult r;
+
+    // Build the page as it WOULD be, and check the whole of it. Checking each
+    // move as it happens would accept the first three and fail the fourth,
+    // leaving a shape nobody asked for.
+    std::vector<std::pair<Uid, Rect>> after;
+    for (const Tile& t : s.tiles) {
+        Rect rect = t.rect;
+        for (const auto& w : want)
+            if (w.first == t.uid) rect = w.second;
+        after.push_back({t.uid, rect});
+    }
+
+    for (const auto& a : after) {
+        if (a.second.empty() || a.second.x < 0 || a.second.y < 0 ||
+            a.second.right() > s.cols) {
+            r.error = "that would push a tile off the page";
+            return r;
+        }
+    }
+    for (size_t i = 0; i < after.size(); ++i)
+        for (size_t k = i + 1; k < after.size(); ++k)
+            if (after[i].second.overlaps(after[k].second)) {
+                r.error = "that would overlap two tiles (SPEC 9.1)";
+                return r;
+            }
+
+    for (Tile& t : s.tiles)
+        for (const auto& w : want)
+            if (w.first == t.uid && !(t.rect == w.second)) {
+                t.rect = w.second;
+                t.slot = w.second.y * s.cols + w.second.x;
+                ++r.moved;
+            }
+    r.ok = true;
+    return r;
+}
+
+SurfaceStore::AlignResult SurfaceStore::align(int surfaceId, Align how) {
+    AlignResult r;
+    Surface* s = mutableById(surfaceId);
+    if (!s) {
+        r.error = "no surface " + std::to_string(surfaceId);
+        return r;
+    }
+    if (s->style != SurfaceStyle::Canvas) {
+        // Nothing to align on a fixed matrix, and pretending otherwise would
+        // suggest the wing is arrangeable when its whole point is that it
+        // is not.
+        r.error = "alignment is for the canvas; a wing's slots do not move";
+        return r;
+    }
+
+    std::vector<Tile*> sel;
+    for (Uid u : selection(surfaceId))
+        for (Tile& t : s->tiles)
+            if (t.uid == u) sel.push_back(&t);
+    if (sel.size() < 2) {
+        r.error = "select at least two tiles to align";
+        return r;
+    }
+
+    std::vector<std::pair<Uid, Rect>> want;
+    const Rect first = sel.front()->rect;
+
+    switch (how) {
+        case Align::Left: {
+            int x = sel.front()->rect.x;
+            for (const Tile* t : sel) x = std::min(x, t->rect.x);
+            for (Tile* t : sel) want.push_back({t->uid, Rect{x, t->rect.y, t->rect.w, t->rect.h}});
+            break;
+        }
+        case Align::Right: {
+            int edge = sel.front()->rect.right();
+            for (const Tile* t : sel) edge = std::max(edge, t->rect.right());
+            for (Tile* t : sel)
+                want.push_back({t->uid, Rect{edge - t->rect.w, t->rect.y, t->rect.w, t->rect.h}});
+            break;
+        }
+        case Align::Top: {
+            int y = sel.front()->rect.y;
+            for (const Tile* t : sel) y = std::min(y, t->rect.y);
+            for (Tile* t : sel) want.push_back({t->uid, Rect{t->rect.x, y, t->rect.w, t->rect.h}});
+            break;
+        }
+        case Align::Bottom: {
+            int edge = sel.front()->rect.bottom();
+            for (const Tile* t : sel) edge = std::max(edge, t->rect.bottom());
+            for (Tile* t : sel)
+                want.push_back({t->uid, Rect{t->rect.x, edge - t->rect.h, t->rect.w, t->rect.h}});
+            break;
+        }
+        case Align::MatchWidth:
+            // From the FIRST selected, not the widest: "make these like that
+            // one" is what the gesture means, and which one is `that one` has
+            // to be something the operator chose rather than something the
+            // geometry decided.
+            for (Tile* t : sel)
+                want.push_back({t->uid, Rect{t->rect.x, t->rect.y, first.w, t->rect.h}});
+            break;
+        case Align::MatchHeight:
+            for (Tile* t : sel)
+                want.push_back({t->uid, Rect{t->rect.x, t->rect.y, t->rect.w, first.h}});
+            break;
+        case Align::SpreadH: {
+            std::vector<Tile*> row = sel;
+            std::sort(row.begin(), row.end(),
+                      [](const Tile* a, const Tile* b) { return a->rect.x < b->rect.x; });
+            const int lo = row.front()->rect.x;
+            const int hi = row.back()->rect.right();
+            int used = 0;
+            for (const Tile* t : row) used += t->rect.w;
+            const int span = hi - lo;
+            const int gaps = static_cast<int>(row.size()) - 1;
+            if (span - used < 0 || gaps <= 0) {
+                r.error = "no room to spread those out";
+                return r;
+            }
+            const int gap = (span - used) / gaps;
+            int x = lo;
+            for (Tile* t : row) {
+                want.push_back({t->uid, Rect{x, t->rect.y, t->rect.w, t->rect.h}});
+                x += t->rect.w + gap;
+            }
+            break;
+        }
+        case Align::SpreadV: {
+            std::vector<Tile*> col = sel;
+            std::sort(col.begin(), col.end(),
+                      [](const Tile* a, const Tile* b) { return a->rect.y < b->rect.y; });
+            const int lo = col.front()->rect.y;
+            const int hi = col.back()->rect.bottom();
+            int used = 0;
+            for (const Tile* t : col) used += t->rect.h;
+            const int gaps = static_cast<int>(col.size()) - 1;
+            if (hi - lo - used < 0 || gaps <= 0) {
+                r.error = "no room to spread those out";
+                return r;
+            }
+            const int gap = (hi - lo - used) / gaps;
+            int y = lo;
+            for (Tile* t : col) {
+                want.push_back({t->uid, Rect{t->rect.x, y, t->rect.w, t->rect.h}});
+                y += t->rect.h + gap;
+            }
+            break;
+        }
+        case Align::FillRow: {
+            // Share one row's full width equally. The remainder goes to the
+            // leftmost tiles one cell each, so the row ends flush rather than
+            // leaving a ragged cell at the end.
+            std::vector<Tile*> row = sel;
+            std::sort(row.begin(), row.end(),
+                      [](const Tile* a, const Tile* b) { return a->rect.x < b->rect.x; });
+            const int n = static_cast<int>(row.size());
+            if (n > s->cols) {
+                r.error = "more tiles than columns";
+                return r;
+            }
+            const int each = s->cols / n;
+            int extra = s->cols % n;
+            const int y = row.front()->rect.y;
+            int x = 0;
+            for (Tile* t : row) {
+                const int w = each + (extra > 0 ? 1 : 0);
+                if (extra > 0) --extra;
+                want.push_back({t->uid, Rect{x, y, w, t->rect.h}});
+                x += w;
+            }
+            break;
+        }
+    }
+
+    return commitArrangement(*s, want);
+}
+
+// ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 std::vector<std::string> SurfaceStore::validate(int surfaceId) const {

@@ -127,28 +127,173 @@ function buildWing(body, page) {
  * fractional, because a tile placed at 3×2 has to be the same size on every
  * screen or the layout stops travelling with the show.
  */
+/* The cell size the CSS grid uses. Drag arithmetic has to agree with it, so
+ * it is named once here rather than guessed in three places. */
+const CELL_W = 104, CELL_H = 46, CELL_GAP = 4;
+
+/* §9.1: the engine refuses an overlapping placement, but refusing on DROP is
+ * too late — the operator has already committed the gesture. So the drag
+ * shows, live, whether the position it is over would be accepted, using the
+ * same rule the engine applies. */
+function wouldFit(page, tile, want) {
+  if (want.w < 1 || want.h < 1) return false;
+  if (want.x < 0 || want.y < 0 || want.x + want.w > page.cols) return false;
+  for (const o of page.tiles) {
+    if (o === tile) continue;
+    if (want.x < o.x + o.w && o.x < want.x + want.w &&
+        want.y < o.y + o.h && o.y < want.y + want.h) return false;
+  }
+  return true;
+}
+
+/* Dragging a tile, or one of its edges. The DOM is rebuilt from the snapshot
+ * twice a second, so the drag works on a floating ghost and commits once —
+ * trying to move the real element would fight the redraw. */
+function beginDrag(ev, canvas, page, tile, mode, onTap) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const shift = ev.shiftKey;
+  const startX = ev.clientX, startY = ev.clientY;
+  const from = { x: tile.x, y: tile.y, w: tile.w, h: tile.h };
+  let want = { ...from };
+
+  const ghost = el('div', 'ghost');
+  const place = r => {
+    ghost.style.left = (r.x * (CELL_W + CELL_GAP)) + 'px';
+    ghost.style.top = (r.y * (CELL_H + CELL_GAP)) + 'px';
+    ghost.style.width = (r.w * CELL_W + (r.w - 1) * CELL_GAP) + 'px';
+    ghost.style.height = (r.h * CELL_H + (r.h - 1) * CELL_GAP) + 'px';
+  };
+  place(from);
+  canvas.appendChild(ghost);
+  S.dragging = true;
+
+  const onMove = m => {
+    // Snap by whole cells: the grid IS the unit, so a half-cell preview
+    // would promise a position the model cannot hold.
+    const dx = Math.round((m.clientX - startX) / (CELL_W + CELL_GAP));
+    const dy = Math.round((m.clientY - startY) / (CELL_H + CELL_GAP));
+    want = mode === 'move'
+      ? { x: from.x + dx, y: from.y + dy, w: from.w, h: from.h }
+      : { x: from.x, y: from.y, w: from.w + dx, h: from.h + dy };
+    want.w = Math.max(1, want.w);
+    want.h = Math.max(1, want.h);
+    want.x = Math.max(0, want.x);
+    want.y = Math.max(0, want.y);
+    place(want);
+    ghost.classList.toggle('bad', !wouldFit(page, tile, want));
+  };
+
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    ghost.remove();
+    S.dragging = false;
+    const moved = want.x !== from.x || want.y !== from.y ||
+                  want.w !== from.w || want.h !== from.h;
+    // A press that went nowhere is a tap. Deciding that here rather than in
+    // a separate click handler avoids depending on whether the browser still
+    // synthesises a click after a prevented pointerdown — it does not,
+    // reliably, and selection silently stopped working when it did not.
+    if (!moved) {
+      if (onTap) onTap(shift);
+      else render();
+      return;
+    }
+    if (!wouldFit(page, tile, want)) {
+      toast('Not there — it would overlap another tile (§9.1)', true);
+      render();
+      return;
+    }
+    // The engine is still the one that decides; this just avoids asking it
+    // a question the answer to which is visibly no.
+    send('TileMove ' + (tile.slot + 1) + ' ' + (want.x + 1) + ' ' + (want.y + 1) +
+         ' ' + want.w + ' ' + want.h);
+  };
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
 function buildCanvas(body, page) {
   const bar = el('div', 'wing-pages');
-  // §9.4: edit mode shows the grid, run mode hides it. Visible at a glance,
-  // never a hidden state.
-  const edit = el('button', S.editMode ? 'on' : '', S.editMode ? 'EDIT' : 'RUN');
-  edit.onclick = () => { S.editMode = !S.editMode; render(); };
+  // §9.4: edit mode shows the grid and the handles, run mode hides both.
+  // Visible at a glance, never a hidden state — and enforced by the engine,
+  // so this button is a view of the page rather than a local flag.
+  const edit = el('button', page.editMode ? 'on' : '',
+                  page.editMode ? 'EDIT' : 'RUN');
+  edit.title = page.editMode
+    ? 'tiles can be moved and resized'
+    : 'tiles can only be operated';
+  edit.onclick = () => send('EditMode ' + (page.editMode ? 'off' : 'on') + ' ' + page.id);
   bar.appendChild(edit);
-  bar.appendChild(el('span', 'wing-hint',
-    'free placement, snapping grid — size sets detail'));
+
+  if (page.editMode) {
+    // §9.1's alignment helpers. They close most of the speed gap with a
+    // fixed grid, which is the whole reason a free canvas is bearable.
+    const sel = page.tiles.filter(t => t.selected).length;
+    for (const [label, how, hint] of [
+      ['Left', 'left', 'align left edges'],
+      ['Top', 'top', 'align top edges'],
+      ['Match W', 'matchwidth', 'take the width of the first selected'],
+      ['Spread', 'spreadh', 'even the gaps'],
+      ['Fill row', 'fillrow', 'share the row equally'],
+    ]) {
+      const b = el('button', '', label);
+      b.title = hint + (sel < 2 ? ' — select two or more tiles first' : '');
+      b.disabled = sel < 2;
+      b.onclick = () => send('Align ' + how);
+      bar.appendChild(b);
+    }
+    const clear = el('button', '', sel ? sel + ' selected' : 'none selected');
+    clear.title = 'clear the tile selection';
+    clear.onclick = () => send('TileSelect');
+    bar.appendChild(clear);
+  }
+
+  bar.appendChild(el('span', 'wing-hint', page.editMode
+    ? 'drag to move · drag the corner to resize · click to select'
+    : 'free placement, snapping grid — size sets detail'));
   body.appendChild(bar);
 
-  const canvas = el('div', 'canvas' + (S.editMode ? ' editing' : ''));
-  canvas.style.gridTemplateColumns = 'repeat(' + page.cols + ', 104px)';
+  const canvas = el('div', 'canvas' + (page.editMode ? ' editing' : ''));
+  canvas.style.gridTemplateColumns = 'repeat(' + page.cols + ', ' + CELL_W + 'px)';
 
   for (const tile of page.tiles) {
     const x = tileExec(tile);
     if (!x) continue;
-    const t = el('div', 'c-tile' + (x.active ? ' live' : ''));
+    const t = el('div', 'c-tile' + (x.active ? ' live' : '') +
+                        (tile.selected ? ' picked' : ''));
     t.dataset.hue = tileHue(x);
     t.style.gridColumn = (tile.x + 1) + ' / span ' + tile.w;
     t.style.gridRow = (tile.y + 1) + ' / span ' + tile.h;
-    wireTile(t, x);
+
+    if (page.editMode) {
+      // In edit mode a tile is a thing to arrange, not a button to press:
+      // pressing Go while rearranging the surface is exactly the mis-press
+      // §9.4 separates the modes to prevent.
+      const tap = shift => {
+        // Selection ORDER is information — match-width reads the first — so
+        // shift-adding appends rather than rebuilding from screen order.
+        const already = page.tiles.filter(o => o.selected).map(o => o.slot + 1);
+        const me = tile.slot + 1;
+        if (!shift) { send('TileSelect ' + me); return; }
+        const next = already.includes(me)
+          ? already.filter(n => n !== me)
+          : already.concat([me]);
+        send(next.length ? 'TileSelect ' + next.join(' ') : 'TileSelect');
+      };
+      t.onpointerdown = ev => {
+        if (ev.button !== 0) return;
+        beginDrag(ev, canvas, page, tile, 'move', tap);
+      };
+      const grip = el('div', 'grip');
+      grip.title = 'drag to resize';
+      grip.onpointerdown = ev => beginDrag(ev, canvas, page, tile, 'resize');
+      t.appendChild(grip);
+    } else {
+      wireTile(t, x);
+    }
 
     // §9.2's density table, implemented rather than described.
     const area = tile.w * tile.h;
