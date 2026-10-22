@@ -258,6 +258,9 @@ public:
     BindingSet* set(Uid uid);
     BindingSet* setByName(const std::string& name);
     const std::deque<BindingSet>& sets() const { return sets_; }
+    // Mutable access, for the engine's DMX-in poll, which has to update each
+    // binding's last-seen level as it goes.
+    std::deque<BindingSet>& setsMutable() { return sets_; }
     bool removeSet(Uid uid);
 
     // Adds to a set, assigning a UID and an id.

@@ -190,7 +190,16 @@ OutputLayer Executor::render(const Sequence& seq, const Patch& patch, double now
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
-Engine::Engine() { startTime_ = monotonicSeconds(); }
+Engine::Engine() {
+    startTime_ = monotonicSeconds();
+    // Everything that measures time measures the SAME time. A subsystem with
+    // its own clock would drift against the one driving cues, and under a
+    // driven clock in a test it would not move at all.
+    dmxIn.setClock([this] { return now(); });
+    timecode.setClock([this] { return now(); });
+    history.setClock([this] { return now(); });
+    actionLog.setClock([this] { return now(); });
+}
 Engine::~Engine() { stopOutput(); }
 
 double Engine::now() const {
@@ -377,7 +386,40 @@ float Engine::bindingValue(const BindTarget& t) const {
     return 0.f;
 }
 
+int Engine::pollDmxBindings() {
+    // §12.3: a DMX-in channel crossing a threshold is the contact closure now
+    // that GPI is deferred. Arriving DMX is a LEVEL, not an event, so the
+    // events bindings consume have to be generated from it — and only for the
+    // channels something is actually bound to, so an idle universe costs
+    // nothing.
+    int pushed = 0;
+    for (BindingSet& set : bindings.setsMutable()) {
+        if (!set.enabled) continue;
+        if (set.page != 0 && set.page != bindings.page()) continue;
+        for (Binding& b : set.bindings) {
+            if (!b.enabled || b.source.kind != SourceKind::DmxIn) continue;
+            const auto level = dmxIn.slot(b.source.channel, b.source.index);
+            if (!level) continue;
+            const float v = static_cast<float>(*level) / 255.f;
+            // Only on change: re-firing an unchanged level every tick would
+            // make a threshold binding chatter at the frame rate.
+            if (b.hasLastRaw && std::fabs(v - b.lastRaw) < 1e-6f) continue;
+
+            InputEvent e;
+            e.kind = SourceKind::DmxIn;
+            e.channel = b.source.channel;
+            e.index = b.source.index;
+            e.value = v;
+            e.time = now();
+            inputs.push(e);
+            ++pushed;
+        }
+    }
+    return pushed;
+}
+
 int Engine::drainInputs() {
+    pollDmxBindings();
     const std::vector<InputEvent> events = inputs.drain();
     int acted = 0;
     for (const InputEvent& e : events) {
@@ -413,6 +455,12 @@ void Engine::tick() {
     // §12.7: inputs are drained HERE, at the top of the control-thread pass,
     // not on the output thread.
     drainInputs();
+    // A DMX source that went quiet releases its slots, and a timecode feed
+    // that stopped is marked stale. Both are time-driven, so they belong on
+    // the same pass rather than waiting for the next packet that may never
+    // come.
+    dmxIn.expire();
+    timecode.tick();
 
     applySwapGroups(t);
 

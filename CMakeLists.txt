@@ -36,6 +36,8 @@ add_library(lumen_core
   src/Undo.cpp
   src/Mvr.cpp
   src/Output.cpp
+  src/Input.cpp
+  src/Timecode.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
 target_compile_options(lumen_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -150,5 +152,11 @@ target_link_libraries(test_undo PRIVATE lumen_core SQLite::SQLite3)
 target_include_directories(test_undo PRIVATE tests)
 target_compile_options(test_undo PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME undo COMMAND test_undo)
+
+add_executable(test_input tests/test_input.cpp)
+target_link_libraries(test_input PRIVATE lumen_core SQLite::SQLite3)
+target_include_directories(test_input PRIVATE tests)
+target_compile_options(test_input PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME input COMMAND test_input)
 
 

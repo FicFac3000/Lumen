@@ -685,6 +685,80 @@ void Console::installBuiltins() {
             return r;
         }});
 
+    // -------------------------------------------------------- timecode (18.5)
+    registry_.add({
+        "Timecode", {"tc"},
+        {{"slot", ParamType::Int, true, "slot id, from `List timecode`"},
+         {"action", ParamType::Enum, true, "start · stop · set",
+          {"start", "stop", "set"}},
+         {"hours", ParamType::Int, false, "with set"},
+         {"minutes", ParamType::Int, false, "with set"},
+         {"seconds", ParamType::Int, false, "with set"},
+         {"frames", ParamType::Int, false, "with set"}},
+        Privilege::Operator, false, false,
+        "Controls a timecode slot. An external slot can be driven manually "
+        "for programming without its source running (SPEC 18.5).",
+        [](Context& ctx) -> Result {
+            const int id = static_cast<int>(ctx.number(0, 0));
+            TimecodeSlot* s = ctx.engine.timecode.slot(id);
+            if (!s) return Result::bad("no timecode slot " + std::to_string(id));
+            const std::string action = ctx.text(1);
+
+            if (action == "start") {
+                ctx.engine.timecode.start(id);
+                return Result::good(s->name + " running at " +
+                                    s->at(ctx.engine.now()).text(s->rate));
+            }
+            if (action == "stop") {
+                ctx.engine.timecode.stop(id);
+                return Result::good(s->name + " stopped at " +
+                                    s->position.text(s->rate));
+            }
+            if (action == "set") {
+                Timecode tc;
+                tc.hours = static_cast<int>(ctx.number(2, 0));
+                tc.minutes = static_cast<int>(ctx.number(3, 0));
+                tc.seconds = static_cast<int>(ctx.number(4, 0));
+                tc.frames = static_cast<int>(ctx.number(5, 0));
+                if (!ctx.engine.timecode.setPosition(id, tc))
+                    return Result::bad(tc.text(s->rate) +
+                                       " is not a valid reading at " +
+                                       frameRateName(s->rate));
+                return Result::good(s->name + " at " + tc.text(s->rate));
+            }
+            return Result::bad("expected start, stop or set");
+        }});
+
+    registry_.add({
+        "AddTimecode", {},
+        {{"name", ParamType::String, true, "slot name"},
+         {"source", ParamType::Enum, false, "internal · ltc · mtc · artnet",
+          {"internal", "ltc", "mtc", "artnet"}},
+         {"rate", ParamType::Enum, false, "24 · 25 · 2997 · 30",
+          {"24", "25", "2997", "30"}}},
+        Privilege::Operator, false, false,
+        "Adds a timecode slot. Several run independently (SPEC 18.5).",
+        [](Context& ctx) -> Result {
+            const std::string name = ctx.text(0);
+            if (name.empty()) return Result::bad("no name given");
+            const std::string src = ctx.text(1, "internal");
+            TimecodeSource source = TimecodeSource::Internal;
+            if (src == "ltc") source = TimecodeSource::Ltc;
+            else if (src == "mtc") source = TimecodeSource::Mtc;
+            else if (src == "artnet") source = TimecodeSource::ArtNet;
+
+            const std::string rateName = ctx.text(2, "25");
+            FrameRate rate = FrameRate::Fps25;
+            if (rateName == "24") rate = FrameRate::Fps24;
+            else if (rateName == "2997") rate = FrameRate::Fps2997Drop;
+            else if (rateName == "30") rate = FrameRate::Fps30;
+
+            const TimecodeSlot& s = ctx.engine.timecode.add(name, source, rate);
+            return Result::good("slot " + std::to_string(s.id) + " '" + s.name +
+                                "' " + timecodeSourceName(source) + " @ " +
+                                frameRateName(rate));
+        }});
+
     // ------------------------------------------------------------- undo (8.6)
     registry_.add({
         "Undo", {},
@@ -880,7 +954,7 @@ void Console::installBuiltins() {
         {{"what", ParamType::Enum, true, "what to list",
           {"patch", "types", "sequences", "executors", "programmer", "selection",
            "groups", "presets", "recipes", "library", "bindings", "history", "log",
-           "commands"}}},
+           "sources", "timecode", "commands"}}},
         Privilege::Any, false, false,
         "Structured query over the show model. Paginated by the caller, never "
         "a whole-show dump (SPEC 16.3).",
@@ -1006,6 +1080,51 @@ void Console::installBuiltins() {
                     o << l.scope << "  " << l.description << "  [" << l.source << "]"
                       << (l.undone ? "  (undone)" : "");
                     if (!l.prompt.empty()) o << "  prompt: " << l.prompt;
+                    r.rows.push_back(o.str());
+                }
+            } else if (what == "sources") {
+                // §18.3's diagnostic page: the first question when two desks
+                // fight over a universe is who is actually sending.
+                for (int u : e.dmxIn.universes().empty()
+                                 ? std::vector<int>{}
+                                 : e.dmxIn.universes()) {
+                    const MergeReport m = e.dmxIn.report(u);
+                    std::ostringstream o;
+                    o << "universe " << u << "  prio " << int(m.winningPriority)
+                      << "  " << m.sourcesActive << "/" << m.sourcesSeen
+                      << " active  " << tieBreakName(m.tie)
+                      << (m.merged ? "  merged" : "");
+                    r.rows.push_back(o.str());
+                }
+                for (const SourceInfo& s : e.dmxIn.sources()) {
+                    std::ostringstream o;
+                    o << "  U" << s.universe << "  "
+                      << (s.name.empty() ? s.cidText() : s.name) << "  "
+                      << inputProtocolName(s.protocol) << "  prio " << int(s.priority)
+                      << "  " << s.origin << "  " << s.packets << " pkt";
+                    if (s.outOfOrder) o << ", " << s.outOfOrder << " late";
+                    if (s.terminated) o << "  [terminated]";
+                    else if (!s.active) o << "  [quiet]";
+                    else if (s.winning) o << "  [winning]";
+                    else o << "  [held back]";
+                    r.rows.push_back(o.str());
+                }
+            } else if (what == "timecode") {
+                for (const TimecodeSlot& s : e.timecode.slots()) {
+                    std::ostringstream o;
+                    o << s.id << "  " << s.name << "  "
+                      << timecodeSourceName(s.source) << " @ "
+                      << frameRateName(s.rate) << "  "
+                      << s.at(e.now()).text(s.rate) << "  "
+                      << (s.running ? "running" : "stopped");
+                    if (s.stale) o << "  [stale]";
+                    if (s.driftFrames > 0.5 || s.driftFrames < -0.5) {
+                        char buf[32];
+                        std::snprintf(buf, sizeof(buf), "  drift %+.1f frames",
+                                      s.driftFrames);
+                        o << buf;
+                    }
+                    if (s.jumps) o << "  " << s.jumps << " jump(s)";
                     r.rows.push_back(o.str());
                 }
             } else if (what == "commands") {

@@ -50,19 +50,25 @@ std::vector<uint8_t> buildSacnPacket(const std::array<uint8_t, 16>& cid,
                                      uint16_t universe,
                                      const uint8_t* dmx,
                                      size_t len) {
-    std::vector<uint8_t> b(kSacnPacketSize, 0);
+    // The packet is sized to the slots it was actually given. Declaring 513
+    // properties while being handed 24 slots would send 488 zeros the caller
+    // never asked for — which on a universe two senders share by range would
+    // black out the other one's channels.
+    const size_t slots = std::min<size_t>(len, 512);
+    const size_t packetSize = kSacnDataOffset + slots;
+    std::vector<uint8_t> b(packetSize, 0);
 
     // --- Root layer ---------------------------------------------------------
     put16(b, 0, 0x0010);                       // preamble size
     put16(b, 2, 0x0000);                       // postamble size
     static const char kAcnId[12] = {'A', 'S', 'C', '-', 'E', '1', '.', '1', '7', 0, 0, 0};
     std::memcpy(b.data() + 4, kAcnId, 12);
-    put16(b, 16, flagsAndLength(kSacnPacketSize - kSacnRootOffset));
+    put16(b, 16, flagsAndLength(packetSize - kSacnRootOffset));
     put32(b, 18, 0x00000004);                  // VECTOR_ROOT_E131_DATA
     std::memcpy(b.data() + 22, cid.data(), 16);
 
     // --- Framing layer ------------------------------------------------------
-    put16(b, 38, flagsAndLength(kSacnPacketSize - kSacnFramingOffset));
+    put16(b, 38, flagsAndLength(packetSize - kSacnFramingOffset));
     put32(b, 40, 0x00000002);                  // VECTOR_E131_DATA_PACKET
     const size_t nameLen = std::min<size_t>(sourceName.size(), 63);
     std::memcpy(b.data() + 44, sourceName.data(), nameLen);
@@ -73,16 +79,16 @@ std::vector<uint8_t> buildSacnPacket(const std::array<uint8_t, 16>& cid,
     put16(b, 113, universe);
 
     // --- DMP layer ----------------------------------------------------------
-    put16(b, 115, flagsAndLength(kSacnPacketSize - kSacnDmpOffset));
+    put16(b, 115, flagsAndLength(packetSize - kSacnDmpOffset));
     b[117] = 0x02;                             // VECTOR_DMP_SET_PROPERTY
     b[118] = 0xa1;                             // address & data type
     put16(b, 119, 0x0000);                     // first property address
     put16(b, 121, 0x0001);                     // address increment
-    put16(b, 123, 0x0201);                     // property value count (513)
+    // The count includes the start code, so it is slots + 1.
+    put16(b, 123, static_cast<uint16_t>(slots + 1));
     b[125] = 0x00;                             // DMX start code
 
-    const size_t n = std::min<size_t>(len, 512);
-    if (dmx && n) std::memcpy(b.data() + kSacnDataOffset, dmx, n);
+    if (dmx && slots) std::memcpy(b.data() + kSacnDataOffset, dmx, slots);
     return b;
 }
 

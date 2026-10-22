@@ -3076,16 +3076,33 @@ preview-only.
 `[flag]` DMX input is new work (§12.7) and arbitration is the part that is easy
 to get wrong.
 
-- sACN in with **per-source priority** — E1.31 carries a priority field, and
-  two sources on one universe must resolve by it, not by arrival order.
-- `[want]` Per-slot arbitration where priorities tie: HTP merge, or
-  highest-priority-wins, configurable per universe.
-- `[want]` Source tracking — list every sender seen per universe, with CID,
-  priority and last-seen time. Essential for diagnosing a universe two desks
-  are fighting over.
-- `[want]` Source timeout and failover: a source going quiet releases its
-  slots after a configurable hold.
-- Art-Net in, and DMX in from a USB interface.
+- `[done]` sACN in with **per-source priority** — E1.31 carries a priority
+  field, and two sources on one universe resolve by it, not by arrival order.
+  A backup desk at priority 50 is invisible while the main desk sends at 100,
+  and takes over the moment the main desk stops. **There is no switchover
+  logic**: the main desk simply stops being a candidate, which is why §18.8's
+  failover needs nothing built for it.
+- `[done]` Per-slot arbitration where priorities tie, per universe: HTP merge,
+  or one source owns the universe — resolved by **oldest** or **latest**, both
+  deterministic, so the winner cannot flip frame to frame with packet arrival
+  order.
+- `[done]` Source tracking: every sender seen per universe with CID, origin,
+  protocol, priority, packet and out-of-order counts, last-seen time, and
+  whether it is winning or being held back. A terminated source stays listed,
+  because knowing a desk sent a terminate is itself diagnostic.
+- `[done]` Source timeout and failover, 2.5s by default — E1.31's network data
+  loss timeout. A universe whose sources all go quiet **stops existing** rather
+  than freezing on its last values: a stale universe that looks live is how a
+  dead feed goes unnoticed.
+- `[done]` Art-Net in, and DMX in from a USB interface — the transports
+  themselves aside. Art-Net carries neither a CID nor a priority, so an
+  identity is synthesised from its origin and the universe's configured
+  priority stands in; without that an Art-Net source could not be arbitrated
+  against an sACN one at all.
+- `[done]` Rejections that matter: out-of-order sequence numbers per E1.31 4.1
+  (behind by up to 20, so a sender restarting its counter is still followed),
+  a non-zero START code, preview data, and a short packet that must not zero
+  the slots it did not send.
 - Uses: remote triggering, another console's output merged in, house-light
   interlocks via the threshold bindings from §12.3.
 
@@ -3113,8 +3130,21 @@ Sources feeding §11.2's cue triggers:
 | **Art-Net timecode** | network |
 | **Internal** | free-running, for programming without an external source |
 
-- `[want]` Multiple timecode slots, so several timelines run independently.
-- `[want]` Visible timecode state — source, running/stopped, drift.
+- `[done]` Multiple timecode slots, so several timelines run independently.
+- `[done]` Visible timecode state — source, rate, running/stopped, drift in
+  frames, jump count, and staleness. A stale slot keeps its last position but
+  says it is stale; an internal slot cannot go stale, being its own source.
+- `[done]` **Drop-frame is implemented properly.** 29.97 drops frame NUMBERS,
+  not frames — two at the start of every minute except every tenth — and
+  treating it as plain 30 drifts 3.6 seconds an hour. One hour is 107,892
+  frames; a reading naming a dropped number is rejected as invalid rather than
+  silently accepted. Verified exhaustively over the first eleven minutes:
+  every valid reading round-trips, numbering is consecutive with no gaps, and
+  exactly eighteen readings do not exist.
+- `[done]` Cue triggers ask whether the timeline **passed** a point, not
+  whether it equals it — which is what makes a trigger survive a dropped frame
+  or a coarse tick. Backward crossings are reported separately, so a cue list
+  can decide for itself what a scrub means.
 - `[want]` MIDI clock as a chase rate source (§11.5), separate from timecode.
 - `[open]` Clock sync between session members (§18.7) — PTP is the correct
   answer and more work than a simple periodic sync; decide when session
@@ -3639,12 +3669,14 @@ Outcome: usable on a real rig.
   the three takeover modes, conflict detection, the input queue, and sets
   persisted in the show
 - Feedback sends (§12.5) — needs a transport to send on
-- MIDI, OSC and DMX-in **transports** (§18.6) — the sockets and ports. The
-  binding layer above them is done and takes normalised events, so each
-  transport is a thin edge that pushes onto the input queue
-- DMX-in source arbitration (§18.3) — per-source priority, tie-break, source
-  tracking, timeout and failover
-- Timecode (§18.5)
+- DMX-in source arbitration (§18.3) — **built**: priority, tie-breaks, source
+  tracking, timeout and failover, with sACN and ArtDmx parsers
+- Timecode (§18.5) — **built**: slots, drop-frame, drift, staleness, trigger
+  crossings
+- MIDI, OSC and DMX-in **transports** (§18.6) — the sockets and ports, which
+  need real hardware to be worth writing. Everything above them is done and
+  takes normalised events, so each transport is a thin edge that parses a
+  packet and pushes onto the input queue
 - Device profiles, hardware surfaces (§19)
 
 ### M6 — Pixel mapping (video stage 1)
@@ -3748,6 +3780,8 @@ Engine and show model, with the command layer as the only mutation path:
 | Bindings, Learn, layering, takeover | §12 | built |
 | Input queue off the output thread | §12.7 | built |
 | Undo, redo, scoped undo, action log | §8.6 | built |
+| DMX input, source arbitration, failover | §18.3 | built |
+| Timecode slots, drop-frame, triggers | §18.5 | built |
 
 Not started: rendering (§2 needs a display), bindings and I/O (§12, §18, §19),
 pixel and video (§13), laser (§14), session networking (§18.7), plugins and the

@@ -5,6 +5,7 @@
 #include "lumen/Binding.hpp"
 #include "lumen/Cue.hpp"
 #include "lumen/Group.hpp"
+#include "lumen/Input.hpp"
 #include "lumen/Library.hpp"
 #include "lumen/Output.hpp"
 #include "lumen/Patch.hpp"
@@ -12,6 +13,7 @@
 #include "lumen/Programmer.hpp"
 #include "lumen/Recipe.hpp"
 #include "lumen/TripleBuffer.hpp"
+#include "lumen/Timecode.hpp"
 #include "lumen/Undo.hpp"
 
 #include <array>
@@ -137,6 +139,12 @@ public:
     History history{uids};
     ActionLog actionLog{uids};
 
+    // DMX input with source arbitration (§18.3), and timecode slots (§18.5).
+    // Both are swept from tick(): a source that went quiet has to release its
+    // slots, and a timecode feed that stopped has to be called stale.
+    DmxInput dmxIn;
+    TimecodeEngine timecode{uids};
+
     // What a drained input turned into, for the layer above to act on. The
     // engine resolves and maps; it does not dispatch, because a Command
     // target needs the command layer and the engine must not depend on it.
@@ -157,6 +165,9 @@ public:
     // and fills pendingActions. Called at the top of tick(); exposed so a
     // test can drive it without running a whole frame.
     int drainInputs();
+    // Turns arriving DMX levels into binding events, for the channels
+    // something is bound to. Called from drainInputs().
+    int pollDmxBindings();
 
     // deque, not vector: ensureSequence()/ensureExecutor() return references,
     // and a vector push_back would invalidate every outstanding one. This bit
