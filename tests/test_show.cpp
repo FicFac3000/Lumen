@@ -970,11 +970,79 @@ static void testSurfacesRoundTrip() {
     fs::remove(path);
 }
 
+
+// §14.6.1: a laser ZONE is show data and travels with the show. What must
+// never travel with it is arming — a file that could restore a live beam
+// would make opening one a thing you had to be ready for.
+static void testLaserZonesRoundTripButNeverArmed() {
+    const std::string path = tmpDir() + "/laser.lumen";
+    fs::remove(path);
+
+    Engine a;
+    buildShow(a);
+    ZoneSafety& house = a.laser.addZone("House");
+    house.mask.enabled = true;
+    house.mask.minX = -0.8f;
+    house.mask.maxX = 0.8f;
+    house.mask.minY = 0.2f;        // nothing below head height
+    house.mask.maxY = 1.0f;
+    house.maxPower = 0.45f;
+    house.stallTimeout = 0.08;
+
+    ZoneSafety& aud = a.laser.addZone("Audience");
+    aud.audienceScanning = true;
+    aud.audienceOptIn = true;
+    aud.audienceAttenuation = 0.04f;
+
+    // Arm one of them, so the file is written while a beam is live.
+    double clock = 0.0;
+    a.laser.setClock([&clock] { return clock; });
+    a.laser.setArmHold(1.0);
+    CHECK(a.laser.beginArm(house.id, SafetyGate::ArmSource::Panel));
+    clock = 2.0;
+    CHECK(a.laser.confirmArm(house.id, SafetyGate::ArmSource::Panel));
+    CHECK(a.laser.zone(house.id)->armed);
+
+    CHECK(ShowFile::save(a, path, "Laser").ok);
+
+    Engine b;
+    const LoadReport lr = ShowFile::load(b, path);
+    CHECK(lr.ok);
+    CHECK_EQ(b.laser.zones().size(), size_t(2));
+
+    const ZoneSafety* h = b.laser.zone(house.id);
+    CHECK(h != nullptr);
+    CHECK(h && h->name == "House");
+    CHECK(h && h->mask.enabled);
+    CHECK_NEAR(h ? h->mask.minY : 0.f, 0.2f);
+    CHECK_NEAR(h ? h->maxPower : 0.f, 0.45f);
+    CHECK_NEAR(static_cast<float>(h ? h->stallTimeout : 0.0), 0.08f);
+
+    // THE POINT: it was armed when saved, and it is not armed now.
+    CHECK(h && !h->armed);
+    for (const ZoneSafety& z : b.laser.zones()) CHECK(!z.armed);
+    CHECK(b.laser.failSafeCount() > 0);
+    CHECK(b.laser.lastFailSafe() == "show loaded");
+
+    // The audience flags survive, because they are the ones a venue signed
+    // off on and re-entering them from memory is how they get entered wrong.
+    const ZoneSafety* au = b.laser.zone(aud.id);
+    CHECK(au && au->audienceScanning);
+    CHECK(au && au->audienceOptIn);
+    CHECK_NEAR(au ? au->audienceAttenuation : 0.f, 0.04f);
+
+    // And a loaded zone keeps its id, so a show's own numbering survives.
+    CHECK(b.laser.zone(aud.id) != nullptr);
+
+    fs::remove(path);
+}
+
 int main() {
     std::printf("lumen show\n");
     testRoundTrip();
     testGroupsPresetsRecipesRoundTrip();
     testSurfacesRoundTrip();
+    testLaserZonesRoundTripButNeverArmed();
     testShowFilesThroughTheConsole();
     testLoadedShowRuns();
     testUidsNotReused();

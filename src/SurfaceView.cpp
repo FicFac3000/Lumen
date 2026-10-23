@@ -181,15 +181,31 @@ TileView resolveTile(const Engine& eng, const Tile& tile) {
             v.command = std::string("Blackout ") + (eng.blackout ? "off" : "on");
             break;
 
-        case TileKind::LaserZone:
-            v.legend = tile.legendOverride.empty() ? "Laser zone" : tile.legendOverride;
-            v.hue = "warn";
-            // The safety gate is not owned by the engine, and reaching around
-            // that to render a tile would be the first step towards arming a
-            // laser from somewhere §14.6 did not sanction. Left unresolved on
-            // purpose until the gate's ownership is decided.
-            v.unsupported = true;
+        case TileKind::LaserZone: {
+            const ZoneSafety* z = nullptr;
+            for (const ZoneSafety& e : eng.laser.zones())
+                if (e.uid == tile.target) z = &e;
+            if (!z) {
+                v.missing = true;
+                v.legend = "missing zone";
+                break;
+            }
+            const SafetyStatus st = eng.laser.status(z->id);
+            v.legend = z->name;
+            v.detail = st.reason;
+            v.hue = st.armed ? "armed" : "warn";
+            v.live = st.armed;
+            if (v.symbol.empty()) v.symbol = "\u26a0";
+
+            // §14.6: a laser tile SHOWS state and can DISARM. It cannot arm —
+            // arming is hold-to-fire from a physical act, and a tile that
+            // armed on a tap would be exactly the single-press path the
+            // whole design exists to prevent. Disarming, by contrast, should
+            // be as easy as possible, so it is a plain press.
+            if (st.armed)
+                v.command = "Disarm " + std::to_string(z->id);
             break;
+        }
 
         case TileKind::Macro:
             v.legend = tile.legendOverride.empty() ? "Macro" : tile.legendOverride;

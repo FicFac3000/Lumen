@@ -338,14 +338,18 @@ async def main(out):
         cmd("ClearAll")
         await pg.wait_for_timeout(300)
         gslot = next(t for t in page1["tiles"] if t["kind"] == "group")
-        await pg.locator(f".wing-cell:has-text('{gslot['legend']}')").first.click()
+        await pg.locator(".wing-cell").nth(gslot["slot"]).click()
         await pg.wait_for_timeout(700)
         results.append((len(state()["programmer"]["selection"]) > 0,
                         "a group tile selects",
                         f'{len(state()["programmer"]["selection"])} fixtures'))
 
-        pslot = next(t for t in page1["tiles"] if t["kind"] == "preset")
-        await pg.locator(f".wing-cell:has-text('{pslot['legend']}')").first.click()
+        # A COLOUR preset specifically: a position palette applied to LED pars
+        # is correctly refused, and picking whichever preset came first would
+        # make this test depend on tile order rather than on behaviour.
+        pslot = next(t for t in page1["tiles"]
+                     if t["kind"] == "preset" and t["colour"])
+        await pg.locator(".wing-cell").nth(pslot["slot"]).click()
         await pg.wait_for_timeout(700)
         refs = [a for f in state()["fixtures"] if f["selected"]
                 for a in f["attrs"] if a["isRef"]]
@@ -354,14 +358,33 @@ async def main(out):
 
         # A blackout tile reflects state and toggles it.
         bslot = next(t for t in page1["tiles"] if t["kind"] == "blackout")
-        await pg.locator(".wing-cell:has-text('Blackout')").first.click()
+        await pg.locator(".wing-cell").nth(bslot["slot"]).click()
         await pg.wait_for_timeout(700)
         results.append((state()["blackout"] is True, "a blackout tile toggles",
                         "blackout on"))
-        await pg.locator(".wing-cell:has-text('Blackout')").first.click()
+        await pg.locator(".wing-cell").nth(bslot["slot"]).click()
         await pg.wait_for_timeout(700)
         results.append((state()["blackout"] is False, "and back off", "blackout off"))
-        del bslot
+
+        # §14.6: a laser tile shows state and can disarm. It must NEVER
+        # offer to arm — a tile that armed on a tap is the single-press path
+        # the whole design exists to prevent.
+        lz = next((t for t in page1["tiles"] if t["kind"] == "laserzone"), None)
+        results.append((lz is not None, "a laser zone tile resolves",
+                        lz["legend"] if lz else "absent"))
+        if lz:
+            results.append((not lz["missing"] and not lz["unsupported"],
+                            "and is neither broken nor inert", lz["detail"]))
+            results.append(("Arm" not in lz["command"] or
+                            lz["command"].startswith("Disarm"),
+                            "and never offers to arm", repr(lz["command"])))
+
+        # There is deliberately no Arm command for anything to reach.
+        req = urllib.request.Request(BASE + "/cmd", data=b"Arm 1", method="POST")
+        with urllib.request.urlopen(req) as r:
+            armed = json.load(r)
+        results.append((armed["ok"] is False and armed["parsed"] is False,
+                        "no Arm command exists at all", armed["message"][:40]))
 
         # §9.1: no two tiles may overlap on the canvas.
         clash = await pg.locator(".clash").count()

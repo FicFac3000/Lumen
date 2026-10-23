@@ -404,6 +404,20 @@ CREATE TABLE IF NOT EXISTS binding (
   rel_scale REAL NOT NULL, toggle_state INTEGER NOT NULL,
   FOREIGN KEY(set_uid) REFERENCES binding_set(uid) ON DELETE CASCADE);
 
+-- Laser zones (SPEC 14.6.1). The zone is SHOW data — a mask, a power
+-- ceiling, an audience-scanning flag — so it travels with the show. What is
+-- deliberately absent is any column for `armed`: a file that could restore a
+-- live beam would make opening one a thing you had to be ready for.
+CREATE TABLE IF NOT EXISTS laser_zone (
+  uid INTEGER PRIMARY KEY, zid INTEGER NOT NULL, name TEXT NOT NULL,
+  mask_enabled INTEGER NOT NULL,
+  min_x REAL NOT NULL, max_x REAL NOT NULL,
+  min_y REAL NOT NULL, max_y REAL NOT NULL,
+  max_power REAL NOT NULL,
+  audience INTEGER NOT NULL, audience_atten REAL NOT NULL,
+  audience_opt_in INTEGER NOT NULL,
+  stall_timeout REAL NOT NULL, ord INTEGER NOT NULL);
+
 -- Executor surfaces (SPEC 9.6). The STYLE is a property of the page, which
 -- is what lets one show hold a busking wing and a programmed canvas at once
 -- rather than having a single answer imposed on all of them.
@@ -1193,6 +1207,33 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
                   .bind(4, e.def.revisions[ri].date);
                 if (!lr.run()) return fail("write library revision");
             }
+        }
+    }
+
+    // --- laser zones (§14.6.1) --------------------------------------------
+    {
+        Stmt lz(db, "INSERT INTO laser_zone(uid,zid,name,mask_enabled,min_x,max_x,"
+                    "min_y,max_y,max_power,audience,audience_atten,audience_opt_in,"
+                    "stall_timeout,ord) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        if (!lz.valid()) return fail("prepare laser zones");
+        int ord = 0;
+        for (const ZoneSafety& z : eng.laser.zones()) {
+            lz.reset();
+            lz.bindUid(1, z.uid)
+              .bind(2, z.id)
+              .bind(3, z.name)
+              .bind(4, z.mask.enabled ? 1 : 0)
+              .bind(5, static_cast<double>(z.mask.minX))
+              .bind(6, static_cast<double>(z.mask.maxX))
+              .bind(7, static_cast<double>(z.mask.minY))
+              .bind(8, static_cast<double>(z.mask.maxY))
+              .bind(9, static_cast<double>(z.maxPower))
+              .bind(10, z.audienceScanning ? 1 : 0)
+              .bind(11, static_cast<double>(z.audienceAttenuation))
+              .bind(12, z.audienceOptIn ? 1 : 0)
+              .bind(13, z.stallTimeout)
+              .bind(14, ord++);
+            if (!lz.run()) return fail("write laser zone");
         }
     }
 
@@ -2027,7 +2068,38 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
         }
     }
 
+    // --- laser zones ------------------------------------------------------
+    // Into a local, like everything else here: a load that fails after this
+    // point must leave the engine as it was, not half-replaced.
+    std::vector<ZoneSafety> zones;
+    {
+        Stmt lz(db, "SELECT uid,zid,name,mask_enabled,min_x,max_x,min_y,max_y,"
+                    "max_power,audience,audience_atten,audience_opt_in,stall_timeout "
+                    "FROM laser_zone ORDER BY ord");
+        if (lz.valid()) {
+            while (lz.step()) {
+                ZoneSafety z;
+                z.uid = lz.uid(0);
+                z.id = lz.i32(1);
+                z.name = lz.text(2);
+                z.mask.enabled = lz.i32(3) != 0;
+                z.mask.minX = static_cast<float>(lz.dbl(4));
+                z.mask.maxX = static_cast<float>(lz.dbl(5));
+                z.mask.minY = static_cast<float>(lz.dbl(6));
+                z.mask.maxY = static_cast<float>(lz.dbl(7));
+                z.maxPower = static_cast<float>(lz.dbl(8));
+                z.audienceScanning = lz.i32(9) != 0;
+                z.audienceAttenuation = static_cast<float>(lz.dbl(10));
+                z.audienceOptIn = lz.i32(11) != 0;
+                z.stallTimeout = lz.dbl(12);
+                eng.uids.observe(z.uid);
+                zones.push_back(std::move(z));
+            }
+        }
+    }
+
     // --- executor surfaces ------------------------------------------------
+    SurfaceStore surfaces(eng.uids);
     {
         Stmt su(db, "SELECT uid,sid,name,style,cols,rows FROM surface ORDER BY ord");
         if (su.valid()) {
@@ -2065,16 +2137,16 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
                 }
                 // restore(), not add(): a load must not re-identify or rename
                 // what it is restoring.
-                eng.surfaces.restore(std::move(sf));
+                surfaces.restore(std::move(sf));
             }
         }
         // A page that fails §9.1 came from a damaged file, not from the
         // placement API, which is exactly the case validate() exists for.
-        for (const Surface& sf : eng.surfaces.all())
-            for (const std::string& w : eng.surfaces.validate(sf.id))
+        for (const Surface& sf : surfaces.all())
+            for (const std::string& w : surfaces.validate(sf.id))
                 rep.warnings.push_back("surface " + sf.name + ": " + w);
-        if (!eng.surfaces.all().empty())
-            eng.surfaces.setCurrent(eng.surfaces.all().front().id);
+        if (!surfaces.all().empty())
+            surfaces.setCurrent(surfaces.all().front().id);
     }
 
     // --- binding sets -----------------------------------------------------
@@ -2178,6 +2250,14 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
     eng.groups = std::move(groups);
     eng.presets = std::move(presets);
     eng.recipes = std::move(recipes);
+    eng.surfaces = std::move(surfaces);
+    // Zones are replaced wholesale, and then §14.6's fail-safe runs because
+    // its defaults list "on show load" explicitly. restoreZone already
+    // refuses to bring arming back; this is the second belt, and it is the
+    // call that records WHY.
+    eng.laser.clearZones();
+    for (ZoneSafety& z : zones) eng.laser.restoreZone(std::move(z));
+    eng.laser.failSafe("show loaded");
     eng.patch = std::move(patch);
     eng.sequences = std::move(seqs);
     eng.executors = std::move(execs);

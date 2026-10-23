@@ -82,11 +82,34 @@ float ZoneSafety::effectivePower() const {
 // ---------------------------------------------------------------------------
 ZoneSafety& SafetyGate::addZone(const std::string& name, Uid uid) {
     ZoneSafety z;
-    z.uid = uid;
+    // A zone with no UID is a zone nothing can reference and that collides
+    // with every other on save — the primary key IS the identity (§8.1).
+    z.uid = uid.valid() ? uid : (uids_ ? uids_->next() : Uid{});
     z.id = nextId_++;
     z.name = name.empty() ? "Zone " + std::to_string(z.id) : name;
     // Fail-safe default: a zone starts disarmed and masked (§14.6).
     z.armed = false;
+    zones_.push_back(std::move(z));
+    return zones_.back();
+}
+
+void SafetyGate::clearZones() {
+    zones_.clear();
+    nextId_ = 1;
+}
+
+ZoneSafety& SafetyGate::restoreZone(ZoneSafety z) {
+    // Whatever the file says, the beam is off. A show that could reopen with
+    // a zone armed would make opening a file a thing you had to be ready for.
+    z.armed = false;
+    z.armedFrom = 0;
+    z.armHolding = false;
+    z.armHoldStarted = 0.0;
+    z.armHoldFrom = 0;
+    z.everFramed = false;
+    z.lastFrameAt = 0.0;
+    z.faults = LaserFault::None;
+    nextId_ = std::max(nextId_, z.id + 1);
     zones_.push_back(std::move(z));
     return zones_.back();
 }
@@ -112,7 +135,16 @@ bool SafetyGate::removeZone(int id) {
     return false;
 }
 
-bool SafetyGate::beginArm(int zoneId) {
+const char* SafetyGate::armSourceName(ArmSource s) {
+    switch (s) {
+        case ArmSource::Panel: return "panel";
+        case ArmSource::Pointer: return "pointer";
+        case ArmSource::KeySwitch: return "key switch";
+    }
+    return "?";
+}
+
+bool SafetyGate::beginArm(int zoneId, ArmSource from) {
     ZoneSafety* z = zone(zoneId);
     if (!z) return false;
     // An emergency stop cannot be armed around. Reaching for arm during an
@@ -120,22 +152,34 @@ bool SafetyGate::beginArm(int zoneId) {
     if (estop_) return false;
     z->armHolding = true;
     z->armHoldStarted = now();
+    z->armHoldFrom = static_cast<uint8_t>(from);
     return true;
 }
 
-bool SafetyGate::confirmArm(int zoneId) {
+bool SafetyGate::confirmArm(int zoneId, ArmSource from) {
     ZoneSafety* z = zone(zoneId);
     if (!z) return false;
     if (estop_) return false;
     if (!z->armHolding) return false;
+    // One act, start to finish. Beginning a hold on a panel key and
+    // finishing it from an on-screen control is two halves of two different
+    // gestures, and accepting that would let one of them be synthesised.
+    if (z->armHoldFrom != static_cast<uint8_t>(from)) return false;
     // The hold has to have actually elapsed. A fumbled double-press must not
     // arm a laser.
     if (now() - z->armHoldStarted < armHold_) return false;
     // Nor may a zone with an unresolved fault arm.
     if (any(z->faults)) return false;
     z->armed = true;
+    z->armedFrom = static_cast<uint8_t>(from);
     z->armHolding = false;
     return true;
+}
+
+std::optional<SafetyGate::ArmSource> SafetyGate::armingFrom(int zoneId) const {
+    const ZoneSafety* z = zone(zoneId);
+    if (!z || !z->armHolding) return std::nullopt;
+    return static_cast<ArmSource>(z->armHoldFrom);
 }
 
 void SafetyGate::cancelArm(int zoneId) {

@@ -6,6 +6,7 @@
 #include "lumen/Cue.hpp"
 #include "lumen/Group.hpp"
 #include "lumen/Input.hpp"
+#include "lumen/Laser.hpp"
 #include "lumen/Library.hpp"
 #include "lumen/Output.hpp"
 #include "lumen/Patch.hpp"
@@ -122,6 +123,18 @@ public:
     GroupStore groups{uids};
     PresetStore presets{uids};
     RecipeLibrary recipes{uids};
+    // The laser safety gate (§14.6.1). The ZONES are show data — a mask, a
+    // power ceiling, an audience-scanning flag — so they must be saved and
+    // loaded like anything else, which means the engine has to own them.
+    // ARMING is not: it is runtime state that never persists and always
+    // starts off, because the safe state is the one a file restores you to.
+    //
+    // Owning it here does not weaken §14.6: GatedFrame's constructor is still
+    // private and SafetyGate is still its only friend, so bypassing the gate
+    // remains a compile error wherever the gate happens to live. The arm path
+    // carries its own guard (SafetyGate::ArmSource).
+    SafetyGate laser;
+
     // Executor surfaces (§9). A page owns its STYLE, so a show keeps a
     // busking wing and a programmed canvas side by side rather than having
     // one answer imposed on every surface it owns (§9.6).

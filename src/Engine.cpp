@@ -199,6 +199,8 @@ Engine::Engine() {
     timecode.setClock([this] { return now(); });
     history.setClock([this] { return now(); });
     actionLog.setClock([this] { return now(); });
+    laser.setClock([this] { return now(); });
+    laser.setUids(uids);
 }
 Engine::~Engine() { stopOutput(); }
 
@@ -461,6 +463,10 @@ void Engine::tick() {
     // come.
     dmxIn.expire();
     timecode.tick();
+    // §14.7: a zone nobody has fed within its stall timeout blanks. Run on
+    // every pass, so a stall ANYWHERE upstream ends in a dark beam rather
+    // than a held one — including a stall in whatever was meant to call this.
+    laser.sweep();
 
     applySwapGroups(t);
 

@@ -630,9 +630,15 @@ void Console::installBuiltins() {
                     // the content.
                     legend = ref;
                     break;
+                case TileKind::LaserZone: {
+                    const ZoneSafety* z = ctx.engine.laser.zone(targetId);
+                    if (!z)
+                        return Result::bad("no laser zone " + std::to_string(targetId));
+                    target = z->uid;
+                    break;
+                }
                 case TileKind::GrandMaster:
                 case TileKind::Blackout:
-                case TileKind::LaserZone:
                 case TileKind::Macro:
                     // These address a thing the console has exactly one of,
                     // or none yet. Nothing to point at.
@@ -662,6 +668,56 @@ void Console::installBuiltins() {
             undo.commit(ctx.engine.history, ctx.engine);
             ctx.engine.actionLog.add(what, "layout", ctx.source, ctx.prompt);
             return Result::good(what);
+        }});
+
+    // ------------------------------------------------------- laser (§14.6)
+    // Note what is NOT here: there is no `Arm`. Arming is hold-to-fire from
+    // a physical act (SafetyGate::ArmSource), and a command for it would be
+    // reachable from a cue, a macro, a binding and the agent — exactly the
+    // single-press path §14.6 exists to prevent. Disarming and stopping are
+    // commands, because the safe direction should be as reachable as the
+    // console can make it.
+    registry_.add({
+        "Disarm", {},
+        {{"zone", ParamType::Int, false, "zone id; every zone if omitted"}},
+        Privilege::Operator, false, false,
+        "Disarms a laser zone, or all of them. There is deliberately no Arm "
+        "command (SPEC 14.6).",
+        [](Context& ctx) -> Result {
+            auto& gate = ctx.engine.laser;
+            if (!ctx.arg(0)) {
+                gate.disarmAll();
+                ctx.engine.actionLog.add("Disarm all zones", "laser", ctx.source,
+                                         ctx.prompt);
+                return Result::good("every zone disarmed");
+            }
+            const int id = static_cast<int>(ctx.number(0, 0));
+            if (!gate.zone(id)) return Result::bad("no laser zone " + std::to_string(id));
+            gate.disarm(id);
+            ctx.engine.actionLog.add("Disarm zone " + std::to_string(id), "laser",
+                                     ctx.source, ctx.prompt);
+            return Result::good("zone " + std::to_string(id) + " disarmed");
+        }});
+
+    registry_.add({
+        "EmergencyStop", {"estop"},
+        {{"action", ParamType::Enum, false, "stop or reset; stop if omitted",
+          {"stop", "reset"}}},
+        Privilege::Operator, false, false,
+        "Latches every laser off, or clears the latch. Resetting also "
+        "disarms, so recovery cannot silently restore a beam (SPEC 14.6).",
+        [](Context& ctx) -> Result {
+            auto& gate = ctx.engine.laser;
+            const std::string what = ctx.text(0);
+            if (what == "reset") {
+                gate.resetEmergencyStop();
+                ctx.engine.actionLog.add("Emergency stop reset", "laser", ctx.source,
+                                         ctx.prompt);
+                return Result::good("emergency stop cleared; every zone disarmed");
+            }
+            gate.emergencyStop();
+            ctx.engine.actionLog.add("EMERGENCY STOP", "laser", ctx.source, ctx.prompt);
+            return Result::good("emergency stop latched");
         }});
 
     registry_.add({

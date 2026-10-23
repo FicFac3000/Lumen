@@ -1637,12 +1637,9 @@ Three things that fall out, each of which was a decision:
   bargain (§9.6). Likewise a kind nothing drives yet renders inert rather
   than looking pressable.
 
-`[open]` **Laser zone tiles are deliberately unresolved.** The safety gate is
-not owned by the engine, and reaching around that to render a tile would be
-the first step towards arming a laser from somewhere §14.6 did not sanction.
-Where the gate lives is a real architectural question and should be decided
-on its own terms, not as a side effect of drawing a surface. **Macro** tiles
-are unresolved for the simpler reason that no macro object exists yet.
+Laser zone tiles resolve too, under the rules §14.6.1 settles. **Macro**
+tiles remain unresolved for the simpler reason that no macro object exists
+yet.
 
 ### 9.4 Edit mode vs run mode
 
@@ -2879,6 +2876,69 @@ unreliably is worse than one that does nothing.
 
 ---
 
+
+### 14.6.1 Where the gate lives
+
+`[done-decision]` **The engine owns the safety gate.** The question was left
+open while laser zone tiles were being built (§9.3.1) precisely so it would
+not be decided as a side effect of drawing a surface. Decided on its own
+terms, it splits cleanly:
+
+- A **zone** is show data — a mask, a power ceiling, an audience-scanning
+  flag and its opt-in. These are the numbers a venue signed off on, and
+  re-entering them from memory at the next load is how they get entered
+  wrong. So they persist, which means the engine has to own them.
+- **Arming** is not show data. It never persists and always starts off,
+  because the safe state is the one a file restores you to. A show that could
+  reopen with a beam live would make opening a file something you had to be
+  ready for. `restoreZone` refuses to bring arming back whatever the record
+  says, and `failSafe("show loaded")` runs again after the swap — two belts,
+  because there is no sensible reason to have one.
+
+Owning it there does **not** weaken §14.6. `GatedFrame`'s constructor is still
+private and `SafetyGate` is still its only friend, so bypassing the gate is a
+compile error wherever the gate happens to live.
+
+What it *does* change is reach: anything holding an `Engine&` can now call the
+arm path. So the arm path carries its own guard.
+
+#### Arming names the physical act that caused it
+
+`[done-decision]` `beginArm`/`confirmArm` take an `ArmSource`, and the enum
+has no value a cue, macro, binding or agent could honestly pass — there is no
+`Command`, no `Playback`, no `Script`. Only `Panel`, `Pointer` and
+`KeySwitch`. Arming from a cue would require writing a lie, in one place, in
+full view. That is §14.6's line held at the one boundary where the code can
+still tell the difference.
+
+A hold is **one act from start to finish**: `confirmArm` refuses if the source
+does not match the one that began the hold. Beginning on a panel key and
+finishing from an on-screen control is two halves of two different gestures,
+and accepting it would let either half be synthesised.
+
+The source is recorded on the zone, so "who armed this" is answerable after
+the fact.
+
+#### What the command layer gets, and what it does not
+
+| Command | Why |
+|---|---|
+| `Disarm [zone]` | the safe direction should be as reachable as the console can make it |
+| `EmergencyStop [stop\|reset]` | likewise; reset also disarms, so recovery cannot silently restore a beam |
+| *(no `Arm`)* | a command for it would be reachable from a cue, a macro, a binding and the agent — exactly the single-press path §14.6 exists to prevent |
+
+A laser zone **tile** follows the same rule: it shows state and offers
+`Disarm` when armed, and nothing when disarmed. A tile that armed on a tap
+would be the single press the whole design is built to prevent.
+
+`[flag]` Found while wiring this up: **zones had no UID at all.** `addZone`
+never minted one, so every zone shared the null identity — nothing could
+reference a zone durably (§8.1), and two zones collided on the primary key the
+moment anyone tried to save them. The gate now takes the show's `UidGen` like
+every other store. Worth recording because the bug was invisible until
+something tried to persist a second zone, which is the kind of thing that
+would otherwise have surfaced on a show file somebody cared about.
+
 ## 15. Decision record — language and concurrency
 
 ### 15.1 Language: C++ (decided 2026-10-20)
@@ -4095,6 +4155,8 @@ Engine and show model, with the command layer as the only mutation path:
 | Canvas drag, resize, alignment, run/edit lock | §9.8 | built |
 | Surface edits in the undo history | §9.8.1 | built |
 | Tile kinds: group, preset, recipe, timecode, masters, label | §9.3.1 | built |
+| Laser gate owned by the engine; zones persist | §14.6.1 | built |
+| Arming carries its physical source; no Arm command | §14.6.1 | built |
 | Surfaces and tiles in the show file | §9.6, §17.7 | built |
 | Simulated output, laser and input | §21.3 | built |
 | Local server and browser console | §21.3 | built |

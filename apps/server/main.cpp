@@ -65,7 +65,6 @@ struct Session {
     Console console{engine};
     SimulatedOutput* dmx = nullptr;   // owned by the engine
     SimulatedLaser laser;
-    SafetyGate gate;
     // One lock. The HTTP thread and the tick thread both touch the engine,
     // and the engine is explicitly not thread-safe (§15.2) — it expects one
     // control thread.
@@ -247,6 +246,10 @@ void buildDemoShow(Session& s) {
         }
     }
 
+    // A laser zone, disarmed as it must be (§14.6). Created before the
+    // tiles, because a tile points at an object rather than conjuring one.
+    e.laser.addZone("Centre");
+
     // §9.3's other tile types, so a surface is not just a row of executors.
     // The wing's second row is where a busking operator keeps the things
     // they reach for without looking.
@@ -260,13 +263,11 @@ void buildDemoShow(Session& s) {
         "Tile 17 preset 1.4;"
         "Tile 18 preset 2.1;"
         "Tile 19 grandmaster;"
-        "Tile 20 blackout");
+        "Tile 20 blackout;"
+        "Tile 14 laserzone 1");
 
     // A binding set, so the Learn surface has something in it.
     con.execute("BindingSet \"Default\"");
-
-    // A laser zone, disarmed as it must be (§14.6).
-    s.gate.addZone("Centre");
 
     // A timecode slot.
     e.timecode.add("Show", TimecodeSource::Internal, FrameRate::Fps25);
@@ -578,7 +579,7 @@ std::string snapshot(Session& s) {
 
     // --- laser safety (§14.6's status panel) ------------------------------
     j.key("laser").beginArray();
-    for (const SafetyStatus& st : s.gate.statuses()) {
+    for (const SafetyStatus& st : e.laser.statuses()) {
         j.beginObject();
         j.member("zone", st.zone);
         j.member("name", st.name);
@@ -590,7 +591,7 @@ std::string snapshot(Session& s) {
         j.endObject();
     }
     j.endArray();
-    j.member("emergencyStop", s.gate.emergencyStopped());
+    j.member("emergencyStop", e.laser.emergencyStopped());
 
     // --- history and log --------------------------------------------------
     j.key("history").beginArray();
@@ -653,7 +654,6 @@ int main(int argc, char** argv) {
         session.dmx = out.get();
         session.engine.addOutput(std::move(out));
     }
-    session.gate.setClock([&session] { return session.engine.now(); });
 
     if (!openShow.empty()) {
         const LoadReport r = ShowFile::load(session.engine, openShow);
@@ -795,9 +795,6 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lock(session.lock);
                 session.engine.tick();
                 session.console.pumpBindings();
-                // The laser pipeline, including its gate, runs every pass so
-                // a stall is noticed even when nothing is rendering.
-                session.gate.sweep();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
         }

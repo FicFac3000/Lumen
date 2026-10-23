@@ -114,6 +114,9 @@ struct ZoneSafety {
     // Armed is NOT a value. It is set only by the hold-to-fire path below,
     // and a zone starts disarmed (§14.6 fail-safe defaults).
     bool armed = false;
+    // Which physical act armed it, kept for the status panel and the audit
+    // record. Never persisted — see armed above.
+    uint8_t armedFrom = 0;
 
     LaserMask mask;
     // Applied after all merging, so no priority can beat it (§11.4 cannot
@@ -138,6 +141,7 @@ struct ZoneSafety {
     // Hold-to-fire progress.
     double armHoldStarted = 0.0;
     bool armHolding = false;
+    uint8_t armHoldFrom = 0;   // which physical act began the hold
 
     // What the gate will actually multiply colour by, which is the number an
     // operator needs to see rather than infer.
@@ -214,28 +218,60 @@ struct SafetyStatus {
 class SafetyGate {
 public:
     SafetyGate() = default;
+    // Zones are show objects, so they need §8.1 identities like everything
+    // else: a tile, a binding or a cue that referenced a zone by its mutable
+    // id would break the moment the id changed. The generator is handed in
+    // rather than owned, so every UID in a show comes from one sequence.
+    void setUids(UidGen& uids) { uids_ = &uids; }
 
     void setClock(std::function<double()> clock) { clock_ = std::move(clock); }
     double now() const { return clock_ ? clock_() : 0.0; }
 
     // --- zones -------------------------------------------------------------
     ZoneSafety& addZone(const std::string& name, Uid uid = Uid{});
+    // Re-inserts a zone exactly as saved — its own UID, id and settings. A
+    // load must not re-identify what it restores. Arming is NOT restored,
+    // whatever the record says: §14.6's fail-safe default is that a show
+    // opens with every beam off.
+    ZoneSafety& restoreZone(ZoneSafety z);
     ZoneSafety* zone(int id);
     const ZoneSafety* zone(int id) const;
     const std::deque<ZoneSafety>& zones() const { return zones_; }
     bool removeZone(int id);
+    // Drops every zone, for a show load replacing them wholesale.
+    void clearZones();
 
     // --- arming (§14.6, §6.1.1) -------------------------------------------
     // Hold-to-fire with confirmation. Two deliberate acts separated by a
     // hold: nothing in the value system can perform either.
+    //
+    // Once the engine owns this gate (§14.6.1), anything holding an Engine&
+    // can reach these — so the arm path carries its own guard. An arm names
+    // the PHYSICAL ACT that caused it, and the enum below has no value a
+    // cue, macro, binding or agent could honestly pass: there is no
+    // `Command`, no `Playback`, no `Script`. A caller that wanted to arm
+    // from a cue would have to write a lie, in one place, in full view.
+    // That is the §14.6 line — structural, not policy — held at the one
+    // boundary where the code can still tell the difference.
+    enum class ArmSource : uint8_t {
+        Panel,     // a physical arm key on a console or wing
+        Pointer,   // a hold on an on-screen arm control, by a present operator
+        KeySwitch, // a keyed hardware interlock
+    };
+    static const char* armSourceName(ArmSource s);
+
     void setArmHold(double seconds) { armHold_ = std::max(0.0, seconds); }
     double armHold() const { return armHold_; }
 
-    bool beginArm(int zoneId);
+    bool beginArm(int zoneId, ArmSource from);
     // Completes only once the hold has elapsed. Returns false and leaves the
-    // zone disarmed otherwise — a fumbled press must not arm a laser.
-    bool confirmArm(int zoneId);
+    // zone disarmed otherwise — a fumbled press must not arm a laser. The
+    // source must MATCH the one that began the hold: starting a hold on a
+    // panel key and finishing it from somewhere else is not one act.
+    bool confirmArm(int zoneId, ArmSource from);
     void cancelArm(int zoneId);
+    // What began the hold, for the action log and the status panel.
+    std::optional<ArmSource> armingFrom(int zoneId) const;
     bool disarm(int zoneId);
     void disarmAll();
 
@@ -279,6 +315,7 @@ public:
     int pointBudget() const { return budget_; }
 
 private:
+    UidGen* uids_ = nullptr;
     std::function<double()> clock_;
     std::deque<ZoneSafety> zones_;
     bool estop_ = false;

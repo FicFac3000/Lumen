@@ -551,9 +551,37 @@ void testMissingTargetsAreVisible() {
 
     // A kind nothing drives yet says so, rather than drawing a tile that
     // looks pressable and is not.
+    Tile macro;
+    macro.kind = TileKind::Macro;
+    CHECK(resolveTile(eng, macro).unsupported);
+
+    // §14.6: a laser tile SHOWS state and can DISARM — never arm. A tile
+    // that armed on a tap would be the single-press path the whole design
+    // exists to prevent, so the resolved command must never be an arm
+    // whatever state the zone is in.
+    const ZoneSafety& z = eng.laser.addZone("House");
     Tile laser;
     laser.kind = TileKind::LaserZone;
-    CHECK(resolveTile(eng, laser).unsupported);
+    laser.target = z.uid;
+
+    const TileView cold = resolveTile(eng, laser);
+    CHECK(!cold.missing);
+    CHECK(!cold.live);
+    CHECK(cold.legend == "House");
+    CHECK(cold.command.empty());          // disarmed: nothing to press
+
+    double clock = 0.0;
+    eng.laser.setClock([&clock] { return clock; });
+    eng.laser.setArmHold(1.0);
+    CHECK(eng.laser.beginArm(z.id, SafetyGate::ArmSource::Panel));
+    clock = 2.0;
+    CHECK(eng.laser.confirmArm(z.id, SafetyGate::ArmSource::Panel));
+
+    const TileView hot = resolveTile(eng, laser);
+    CHECK(hot.live);
+    CHECK(hot.command == "Disarm " + std::to_string(z.id));
+    CHECK(hot.command.find("Arm") == std::string::npos ||
+          hot.command.find("Disarm") == 0);
 
     // A label points at nothing by design, so it is neither missing nor
     // unsupported — it is just layout.

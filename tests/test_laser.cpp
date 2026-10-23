@@ -9,6 +9,8 @@
 // with future code.
 #include "Check.hpp"
 
+#include <string>
+
 #include "lumen/Command.hpp"
 #include "lumen/Laser.hpp"
 
@@ -17,6 +19,10 @@
 #include <type_traits>
 
 using namespace lumen;
+
+// Every existing arming test is about the HOLD, the faults and the gate
+// rather than about which surface armed, so they all speak for a panel key.
+static constexpr SafetyGate::ArmSource Panel = SafetyGate::ArmSource::Panel;
 
 // ---------------------------------------------------------------------------
 // The structural guarantee (§14.6)
@@ -40,9 +46,9 @@ double gNow = 0.0;
 
 // The arm sequence, as an operator performs it: hold, wait, confirm.
 bool armZone(SafetyGate& gate, int id) {
-    if (!gate.beginArm(id)) return false;
+    if (!gate.beginArm(id, Panel)) return false;
     gNow += gate.armHold() + 0.01;
-    return gate.confirmArm(id);
+    return gate.confirmArm(id, Panel);
 }
 
 int litPoints(const LaserPath& p) {
@@ -121,19 +127,19 @@ static void testArmingIsHoldToFire() {
     const int id = gate.addZone("Front").id;
 
     // Confirming without beginning does nothing.
-    CHECK(!gate.confirmArm(id));
+    CHECK(!gate.confirmArm(id, Panel));
     CHECK(!gate.zone(id)->armed);
 
     // Confirming too early does nothing: a fumbled double-press must not arm
     // a laser.
-    CHECK(gate.beginArm(id));
+    CHECK(gate.beginArm(id, Panel));
     gNow = 0.5;
-    CHECK(!gate.confirmArm(id));
+    CHECK(!gate.confirmArm(id, Panel));
     CHECK(!gate.zone(id)->armed);
 
     // Held long enough, it arms.
     gNow = 1.1;
-    CHECK(gate.confirmArm(id));
+    CHECK(gate.confirmArm(id, Panel));
     CHECK(gate.zone(id)->armed);
     const GatedFrame f = gate.process(id, makeSquare());
     CHECK(!f.blanked());
@@ -142,14 +148,14 @@ static void testArmingIsHoldToFire() {
 
     // Cancelling mid-hold abandons it.
     CHECK(gate.disarm(id));
-    CHECK(gate.beginArm(id));
+    CHECK(gate.beginArm(id, Panel));
     gate.cancelArm(id);
     gNow = 10.0;
-    CHECK(!gate.confirmArm(id));
+    CHECK(!gate.confirmArm(id, Panel));
     CHECK(!gate.zone(id)->armed);
 
-    CHECK(!gate.beginArm(99));
-    CHECK(!gate.confirmArm(99));
+    CHECK(!gate.beginArm(99, Panel));
+    CHECK(!gate.confirmArm(99, Panel));
     CHECK(!gate.disarm(99));
 }
 
@@ -222,8 +228,8 @@ static void testEmergencyStopIsItsOwnPath() {
     CHECK(gate.status(a).emergencyStopped);
 
     // It is a LATCH: it cannot be armed around.
-    CHECK(!gate.beginArm(a));
-    CHECK(!gate.confirmArm(a));
+    CHECK(!gate.beginArm(a, Panel));
+    CHECK(!gate.confirmArm(a, Panel));
     CHECK(!armZone(gate, a));
     CHECK(gate.process(a, makeSquare()).blanked());
 
@@ -260,16 +266,16 @@ static void testFaultsBlankAndDisarm() {
         // deliberate re-arm. A beam returning on its own the moment a cable
         // is reseated is exactly what must not happen.
         CHECK(!gate.zone(id)->armed);
-        CHECK(!gate.confirmArm(id));
+        CHECK(!gate.confirmArm(id, Panel));
         gate.clearFault(id, fault);
         CHECK(!gate.zone(id)->armed);   // clearing is not arming
     }
 
     // Arming is refused while a fault stands.
     gate.reportFault(id, LaserFault::GalvoFault);
-    CHECK(gate.beginArm(id));
+    CHECK(gate.beginArm(id, Panel));
     gNow += gate.armHold() + 0.01;
-    CHECK(!gate.confirmArm(id));
+    CHECK(!gate.confirmArm(id, Panel));
     gate.clearFault(id, LaserFault::GalvoFault);
     CHECK(armZone(gate, id));
 
@@ -891,8 +897,103 @@ static void testTheWholePipelineEndsAtTheGate() {
     CHECK_EQ(litPoints(stopped.points()), 0);
 }
 
+
+// §14.6.1: once the engine owns the gate, anything holding an Engine& can
+// reach the arm path, so the arm path carries its own guard. The enum has no
+// value a cue, macro or agent could honestly pass — and a hold is ONE act
+// from start to finish.
+// A zone is a show object and needs a §8.1 identity like everything else: a
+// tile, a binding or a cue referencing it by its mutable id would break the
+// moment that id changed — and without one, two zones collide on save.
+static void testZonesHaveIdentities() {
+    UidGen uids;
+    SafetyGate gate;
+    gate.setUids(uids);
+
+    const ZoneSafety& a = gate.addZone("House");
+    const ZoneSafety& b = gate.addZone("Audience");
+    CHECK(a.uid.valid());
+    CHECK(b.uid.valid());
+    CHECK(!(a.uid == b.uid));
+    CHECK(a.id != b.id);
+
+    // An explicit UID is honoured, which is what a load needs.
+    const Uid given = uids.next();
+    const ZoneSafety& c = gate.addZone("Given", given);
+    CHECK(c.uid == given);
+
+    // A restored zone keeps everything but its arming (§14.6).
+    ZoneSafety saved;
+    saved.uid = uids.next();
+    saved.id = 42;
+    saved.name = "Restored";
+    saved.armed = true;
+    saved.armHolding = true;
+    saved.maxPower = 0.3f;
+    const ZoneSafety& back = gate.restoreZone(saved);
+    CHECK(back.id == 42);
+    CHECK(back.name == "Restored");
+    CHECK_NEAR(back.maxPower, 0.3f);
+    CHECK(!back.armed);
+    CHECK(!back.armHolding);
+    // A later zone must not reuse the restored id.
+    CHECK(gate.addZone("After").id > 42);
+}
+
+static void testArmingNamesItsSource() {
+    SafetyGate gate;
+    double t = 0.0;
+    gate.setClock([&t] { return t; });
+    gate.setArmHold(1.0);
+    const int z = gate.addZone("House").id;
+
+    using Src = SafetyGate::ArmSource;
+
+    // A hold begun on a panel key cannot be finished from an on-screen
+    // control. Two halves of two different gestures is not one gesture, and
+    // accepting it would let either half be synthesised.
+    CHECK(gate.beginArm(z, Src::Panel));
+    CHECK(gate.armingFrom(z).value() == Src::Panel);
+    t = 2.0;
+    CHECK(!gate.confirmArm(z, Src::Pointer));
+    CHECK(!gate.zone(z)->armed);
+    // The same act completes.
+    CHECK(gate.confirmArm(z, Src::Panel));
+    CHECK(gate.zone(z)->armed);
+    CHECK(gate.zone(z)->armedFrom == static_cast<uint8_t>(Src::Panel));
+
+    // The source is recorded for the audit trail, so "who armed this" is
+    // answerable after the fact.
+    gate.disarm(z);
+    t = 10.0;
+    CHECK(gate.beginArm(z, Src::KeySwitch));
+    t = 12.0;
+    CHECK(gate.confirmArm(z, Src::KeySwitch));
+    CHECK(gate.zone(z)->armedFrom == static_cast<uint8_t>(Src::KeySwitch));
+
+    // Nothing about the source weakens the rules that were already there:
+    // the hold still has to elapse, and an E-stop still cannot be armed
+    // around.
+    gate.disarm(z);
+    t = 20.0;
+    CHECK(gate.beginArm(z, Src::Pointer));
+    t = 20.5;
+    CHECK(!gate.confirmArm(z, Src::Pointer));   // hold not elapsed
+
+    gate.emergencyStop();
+    t = 30.0;
+    CHECK(!gate.beginArm(z, Src::Panel));
+    CHECK(!gate.confirmArm(z, Src::Panel));
+
+    // And every name round-trips, so an audit record cannot say "?".
+    for (Src srcv : {Src::Panel, Src::Pointer, Src::KeySwitch})
+        CHECK(std::string(SafetyGate::armSourceName(srcv)) != "?");
+}
+
 int main() {
     std::printf("lumen laser\n");
+    testZonesHaveIdentities();
+    testArmingNamesItsSource();
     testAZoneStartsDarkAndStaysDarkUntilArmed();
     testArmingIsHoldToFire();
     testACueCannotArmAZone();
