@@ -3,6 +3,7 @@
 
 #include "lumen/Command.hpp"
 #include "lumen/Show.hpp"
+#include "lumen/Surface.hpp"
 #include "lumen/Undo.hpp"
 
 #include <cstdio>
@@ -691,8 +692,110 @@ static void testTheActionLogTravelsWithTheShow() {
     fs::remove(path);
 }
 
+
+// Arranging a surface is an edit, and the one that most needs undoing: a
+// conversion can DROP tiles and an alignment moves several at once, so "put
+// it back" is not something anyone can do by hand from memory (§9.8).
+static void testSurfaceEditsUndo() {
+    Engine eng;
+    Console con(eng);
+    installStarterSurfaces(eng.surfaces);
+    eng.surfaces.setCurrent(2);          // the canvas page
+
+    eng.surfaces.placeAt(2, Rect{0, 0, 3, 2}, TileKind::Executor, eng.uids.next());
+    eng.surfaces.placeAt(2, Rect{3, 0, 2, 1}, TileKind::Executor, eng.uids.next());
+    eng.history.clear();
+
+    CHECK(con.execute("EditMode on").ok);
+
+    // A move is undoable, and lands back exactly where it was.
+    CHECK(con.execute("TileMove 1 1 4").ok);
+    CHECK_EQ(eng.surfaces.byId(2)->tiles[0].rect.y, 3);
+    CHECK(eng.history.canUndo());
+    CHECK(eng.history.undo(eng).ok());
+    CHECK_EQ(eng.surfaces.byId(2)->tiles[0].rect.y, 0);
+    CHECK_EQ(eng.surfaces.byId(2)->tiles[0].rect.x, 0);
+    CHECK(eng.history.redo(eng).ok());
+    CHECK_EQ(eng.surfaces.byId(2)->tiles[0].rect.y, 3);
+    CHECK(eng.history.undo(eng).ok());
+
+    // A REFUSED move leaves nothing to undo. An undo that does nothing is
+    // worse than no undo, because it eats the press that would have worked.
+    // Counting entries would not catch this — recording after an undo
+    // truncates the redo tail, so the count can stay the same for the wrong
+    // reason. What matters is whether undo is even offered.
+    CHECK(!eng.history.canUndo());
+    CHECK(!con.execute("TileMove 1 4 1").ok);   // onto the other tile
+    CHECK(!eng.history.canUndo());
+
+    // Alignment, which moves several tiles, undoes as ONE entry.
+    CHECK(con.execute("TileSelect 1 4").ok);
+    CHECK(con.execute("Align matchwidth").ok);
+    CHECK_EQ(eng.surfaces.byId(2)->tiles[1].rect.w, 3);
+    CHECK(eng.history.canUndo());
+    CHECK(eng.history.undo(eng).ok());
+    CHECK_EQ(eng.surfaces.byId(2)->tiles[1].rect.w, 2);
+    CHECK(!eng.history.canUndo());
+
+    // An alignment that changes nothing — both tiles already share a top
+    // edge — succeeds but records nothing, for the same reason.
+    CHECK(con.execute("Align top").ok);
+    CHECK(!eng.history.canUndo());
+
+    // A REFUSED alignment records nothing either. Three tiles of equal width
+    // cannot share one row here, so fillrow has nowhere to put them.
+    CHECK(!con.execute("Align left").ok);       // would stack them
+    CHECK(!eng.history.canUndo());
+
+    // The conversion that DROPS tiles is undoable, which is the whole reason
+    // this scope had to exist: forcing it is destructive and irreversible by
+    // hand, because the geometry is gone (§9.7).
+    eng.surfaces.byId(2)->rows = 1;      // only row 0 survives a wing
+    const size_t tilesBefore = eng.surfaces.byId(2)->tiles.size();
+    eng.surfaces.placeAt(2, Rect{0, 4, 1, 1}, TileKind::Executor, eng.uids.next());
+    CHECK_EQ(eng.surfaces.byId(2)->tiles.size(), tilesBefore + 1);
+
+    CHECK(con.execute("SurfaceStyle wing 2 force").ok);
+    CHECK(eng.surfaces.byId(2)->style == SurfaceStyle::Wing);
+    CHECK(eng.surfaces.byId(2)->tiles.size() < tilesBefore + 1);
+
+    CHECK(eng.history.undo(eng).ok());
+    CHECK(eng.surfaces.byId(2)->style == SurfaceStyle::Canvas);
+    CHECK_EQ(eng.surfaces.byId(2)->tiles.size(), tilesBefore + 1);
+    // The dropped tile is back with its geometry, not as a placeholder.
+    bool found = false;
+    for (const Tile& t : eng.surfaces.byId(2)->tiles)
+        if (t.rect.y == 4) found = true;
+    CHECK(found);
+
+    // Assigning and clearing a tile both undo.
+    CHECK(con.execute("Surface 1").ok);
+    installStarterTypes(eng.patch);
+    CHECK(con.execute("Fixture 1 Thru 4 Patch \"LED Par RGBW\" 4 1 1").ok);
+    CHECK(con.executeAll("Fixture 1 At 100;Store Cue 1 1;ClearAll").ok);
+    CHECK(con.execute("Assign 1 1").ok);
+
+    CHECK(con.execute("Tile 3 executor 1").ok);
+    CHECK(eng.surfaces.byId(1)->atSlot(2) != nullptr);
+    CHECK(eng.history.undo(eng).ok());
+    CHECK(eng.surfaces.byId(1)->atSlot(2) == nullptr);
+    CHECK(eng.history.redo(eng).ok());
+    CHECK(eng.surfaces.byId(1)->atSlot(2) != nullptr);
+
+    // Clearing a slot undoes too, bringing the tile back with its assignment
+    // rather than as an empty placeholder.
+    CHECK(con.execute("Tile 3 empty").ok);
+    CHECK(eng.surfaces.byId(1)->atSlot(2) == nullptr);
+    CHECK(eng.history.undo(eng).ok());
+    const Tile* back = eng.surfaces.byId(1)->atSlot(2);
+    CHECK(back != nullptr);
+    CHECK(back && back->kind == TileKind::Executor);
+    CHECK(back && back->target.valid());
+}
+
 int main() {
     std::printf("lumen undo\n");
+    testSurfaceEditsUndo();
     testUndoRedoBasics();
     testTransactionsRevertAtomically();
     testScopedUndoGuardsAgainstCollisions();

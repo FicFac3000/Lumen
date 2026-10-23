@@ -27,6 +27,7 @@
 #pragma once
 
 #include "lumen/Patch.hpp"
+#include "lumen/Surface.hpp"
 #include "lumen/Uid.hpp"
 #include "lumen/Value.hpp"
 
@@ -290,6 +291,29 @@ private:
     std::string description_;
     std::vector<FixtureId> ids_;
     std::vector<Snap> before_;
+    bool cancelled_ = false;
+};
+
+// One surface page's tiles (§9.8). Arranging a surface is an edit like any
+// other, and the one that most needs undoing: a conversion can DROP tiles,
+// and an alignment moves several at once, so "put it back" is not something
+// anyone can do by hand from memory.
+//
+// The whole tile list is captured rather than a delta. A page holds tens of
+// tiles, not thousands, so the simple thing is also the affordable thing —
+// and unlike the patch, there is no bulk operation here to make it otherwise.
+class SurfaceEdit {
+public:
+    SurfaceEdit(const Engine& eng, std::string description, int surfaceId);
+    Uid commit(History& history, Engine& eng);
+    void cancel() { cancelled_ = true; }
+
+private:
+    std::string description_;
+    int surfaceId_ = 0;
+    bool existed_ = false;
+    std::vector<Tile> before_;
+    SurfaceStyle beforeStyle_ = SurfaceStyle::Wing;
     bool cancelled_ = false;
 };
 

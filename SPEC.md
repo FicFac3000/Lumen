@@ -1733,6 +1733,30 @@ you to.
 | `TileSelect [slots…]` | selects tiles, in order; bare clears |
 | `Align <how>` | left, right, top, bottom, matchwidth, matchheight, spreadh, spreadv, fillrow |
 
+#### 9.8.1 Surface edits are undoable
+
+`[done-decision]` Arranging a surface records into §8.6's history under the
+**Layout** scope. This is the scope that most needs to exist, because its
+operations are the hardest to reverse by hand:
+
+- A **conversion** can drop tiles outright, and §9.7 is explicit that the old
+  geometry is not kept anywhere. Without undo, forcing one is unrecoverable.
+- An **alignment** moves several tiles at once, as one entry. Undoing it tile
+  by tile would be absurd, and remembering where four tiles were a moment ago
+  is not something anyone does.
+
+The whole tile list is captured rather than a delta. A page holds tens of
+tiles, not thousands, so the simple thing is also the affordable thing —
+unlike the patch (§8.6), where a bulk operation forced per-fixture records.
+
+Two rules fall out of the general principle that an undo entry must
+correspond to a change:
+
+- A **refused** move or alignment records nothing. An undo that does nothing
+  is worse than no undo, because it consumes the press that would have worked.
+- An alignment that **changes nothing** — tiles that already share the edge
+  being aligned to — succeeds and records nothing, for the same reason.
+
 `[flag]` A canvas tile's slot is its top-left cell, so **a tile's slot changes
 when it moves**. That is fine for the UI, which knows where it just dragged
 from, and awkward for a person typing two moves in a row. Mitigated for now by
@@ -3924,8 +3948,6 @@ Specced lightly or not at all, and worth a pass before M3:
 - **Encoder detail** — acceleration curves, fine mode, snap to ChannelSet
   boundaries (§7.2)
 - *(Undo model now specced and built — §8.6)*
-- **Surface editing is not undoable yet** — §8.6's history covers the
-  programmer and the patch, but moving a tile is an edit and should be in it
 
 ### 21.2 ChamSys `.hed` import — blocked
 
@@ -4035,6 +4057,7 @@ Engine and show model, with the command layer as the only mutation path:
 | Executor surface, both styles, as pages | §9.6 | built |
 | Page style conversion, with a loss report | §9.7 | built |
 | Canvas drag, resize, alignment, run/edit lock | §9.8 | built |
+| Surface edits in the undo history | §9.8.1 | built |
 | Surfaces and tiles in the show file | §9.6, §17.7 | built |
 | Simulated output, laser and input | §21.3 | built |
 | Local server and browser console | §21.3 | built |

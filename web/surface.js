@@ -249,6 +249,14 @@ function buildCanvas(body, page) {
     clear.title = 'clear the tile selection';
     clear.onclick = () => send('TileSelect');
     bar.appendChild(clear);
+
+    // Arranging is where mistakes happen, so undo belongs here rather than
+    // only in the programmer window three panes away (§8.6).
+    const undo = el('button', '', '↶ Undo');
+    undo.title = S.state.canUndo ? 'undo the last edit' : 'nothing to undo';
+    undo.disabled = !S.state.canUndo;
+    undo.onclick = () => send('Undo');
+    bar.appendChild(undo);
   }
 
   bar.appendChild(el('span', 'wing-hint', page.editMode

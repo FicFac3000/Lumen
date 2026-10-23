@@ -513,14 +513,22 @@ void Console::installBuiltins() {
             const bool force = (third == "force" || third == "Force");
 
             std::string err;
+            SurfaceEdit undo(ctx.engine, std::string("Make page ") +
+                                             std::to_string(id) + " a " +
+                                             surfaceStyleName(*want), id);
             const ConvertReport rep = store.setStyle(id, *want, force, &err);
             if (!err.empty()) {
+                undo.cancel();
                 // Refused, with the reason and the full list: a layout
                 // somebody arranged by hand is not discarded on a shrug.
                 Result r = Result::bad(err);
                 for (const std::string& n : rep.notes) r.rows.push_back(n);
                 return r;
             }
+            undo.commit(ctx.engine.history, ctx.engine);
+            ctx.engine.actionLog.add("Page " + std::to_string(id) + " -> " +
+                                         surfaceStyleName(*want),
+                                     "layout", ctx.source, ctx.prompt);
             Result r = Result::good("page " + std::to_string(id) + " is now a " +
                                     surfaceStyleName(*want));
             if (!rep.lossless)
@@ -550,7 +558,12 @@ void Console::installBuiltins() {
             if (*kind == TileKind::Empty) {
                 if (const Tile* t = s->atSlot(slot)) {
                     const Uid uid = t->uid;
+                    SurfaceEdit undo(ctx.engine,
+                                     "Clear slot " + std::to_string(slot + 1), page);
                     store.clearTile(page, uid);
+                    undo.commit(ctx.engine.history, ctx.engine);
+                    ctx.engine.actionLog.add("Clear slot " + std::to_string(slot + 1),
+                                             "layout", ctx.source, ctx.prompt);
                     return Result::good("slot " + std::to_string(slot + 1) + " cleared");
                 }
                 return Result::good("slot " + std::to_string(slot + 1) +
@@ -573,15 +586,22 @@ void Console::installBuiltins() {
                 return Result::bad("preset tiles need pool.id — not yet wired");
             }
 
+            const std::string what = std::string(tileKindName(*kind)) + " " +
+                                     std::to_string(targetId) + " on slot " +
+                                     std::to_string(slot + 1);
+            SurfaceEdit undo(ctx.engine, what, page);
             PlaceResult r = (s->style == SurfaceStyle::Wing)
                                 ? store.placeInSlot(page, slot, *kind, target)
                                 : store.placeAt(page,
                                                 Rect{slot % s->cols, slot / s->cols, 1, 1},
                                                 *kind, target);
-            if (!r.ok) return Result::bad(r.error);
-            return Result::good(std::string(tileKindName(*kind)) + " " +
-                                std::to_string(targetId) + " on slot " +
-                                std::to_string(slot + 1));
+            if (!r.ok) {
+                undo.cancel();
+                return Result::bad(r.error);
+            }
+            undo.commit(ctx.engine.history, ctx.engine);
+            ctx.engine.actionLog.add(what, "layout", ctx.source, ctx.prompt);
+            return Result::good(what);
         }});
 
     registry_.add({
@@ -643,8 +663,18 @@ void Console::installBuiltins() {
             if (ctx.arg(3)) want.w = static_cast<int>(ctx.number(3, want.w));
             if (ctx.arg(4)) want.h = static_cast<int>(ctx.number(4, want.h));
 
+            const std::string what = "Move tile to " + std::to_string(want.x + 1) +
+                                     "," + std::to_string(want.y + 1) + " at " +
+                                     std::to_string(want.w) + "x" +
+                                     std::to_string(want.h);
+            SurfaceEdit undo(ctx.engine, what, page);
             const PlaceResult r = store.moveTile(page, t->uid, want);
-            if (!r.ok) return Result::bad(r.error);
+            if (!r.ok) {
+                undo.cancel();
+                return Result::bad(r.error);
+            }
+            undo.commit(ctx.engine.history, ctx.engine);
+            ctx.engine.actionLog.add(what, "layout", ctx.source, ctx.prompt);
             return Result::good("tile moved to " + std::to_string(want.x + 1) + "," +
                                 std::to_string(want.y + 1) + " at " +
                                 std::to_string(want.w) + "x" + std::to_string(want.h));
@@ -708,8 +738,18 @@ void Console::installBuiltins() {
                 SurfaceStore::alignFromName(ctx.text(0));
             if (!how) return Result::bad("unknown alignment: " + ctx.text(0));
 
+            const std::string what = std::string("Align ") + ctx.text(0);
+            SurfaceEdit undo(ctx.engine, what, page);
             const SurfaceStore::AlignResult r = store.align(page, *how);
-            if (!r.ok) return Result::bad(r.error);
+            if (!r.ok) {
+                // A refused alignment changed nothing, so it must not leave
+                // an entry: an undo that does nothing is worse than no undo,
+                // because it consumes the press that would have worked.
+                undo.cancel();
+                return Result::bad(r.error);
+            }
+            undo.commit(ctx.engine.history, ctx.engine);
+            ctx.engine.actionLog.add(what, "layout", ctx.source, ctx.prompt);
             return Result::good(plural(static_cast<size_t>(r.moved), "tile", "tiles") +
                                 " moved");
         }});

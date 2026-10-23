@@ -547,4 +547,78 @@ Uid PatchEdit::commit(History& history, Engine& eng) {
     return history.record(std::move(op));
 }
 
+// ---------------------------------------------------------------------------
+// SurfaceEdit (§9.8)
+// ---------------------------------------------------------------------------
+namespace {
+
+bool sameTiles(const std::vector<Tile>& a, const std::vector<Tile>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (!(a[i].uid == b[i].uid) || a[i].kind != b[i].kind ||
+            !(a[i].target == b[i].target) || a[i].slot != b[i].slot ||
+            !(a[i].rect == b[i].rect) || a[i].legendOverride != b[i].legendOverride ||
+            a[i].colourOverride != b[i].colourOverride ||
+            a[i].symbolOverride != b[i].symbolOverride)
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+SurfaceEdit::SurfaceEdit(const Engine& eng, std::string description, int surfaceId)
+    : description_(std::move(description)), surfaceId_(surfaceId) {
+    if (const Surface* s = eng.surfaces.byId(surfaceId)) {
+        existed_ = true;
+        before_ = s->tiles;
+        beforeStyle_ = s->style;
+    }
+}
+
+Uid SurfaceEdit::commit(History& history, Engine& eng) {
+    if (cancelled_ || !existed_) return Uid{};
+    const Surface* s = eng.surfaces.byId(surfaceId_);
+    if (!s) return Uid{};
+    if (s->style == beforeStyle_ && sameTiles(before_, s->tiles)) return Uid{};
+
+    Operation op;
+    op.description = description_;
+    op.scope = EditScope::Layout;
+    op.bytes = (before_.size() + s->tiles.size()) * sizeof(Tile);
+
+    // §8.6's scoped undo needs to know what this touched. A surface edit
+    // touches the page and every tile on either side of it — a tile that was
+    // dropped by a conversion is as much "touched" as one that moved.
+    std::vector<Uid> touched{s->uid};
+    auto note = [&](const std::vector<Tile>& tiles) {
+        for (const Tile& t : tiles)
+            if (std::find(touched.begin(), touched.end(), t.uid) == touched.end())
+                touched.push_back(t.uid);
+    };
+    note(before_);
+    note(s->tiles);
+    op.touched = std::move(touched);
+
+    const int id = surfaceId_;
+    const std::vector<Tile> before = before_;
+    const SurfaceStyle beforeStyle = beforeStyle_;
+    const std::vector<Tile> after = s->tiles;
+    const SurfaceStyle afterStyle = s->style;
+
+    op.undo = [id, before, beforeStyle](Engine& e) {
+        if (Surface* sf = e.surfaces.byId(id)) {
+            sf->tiles = before;
+            sf->style = beforeStyle;
+        }
+    };
+    op.redo = [id, after, afterStyle](Engine& e) {
+        if (Surface* sf = e.surfaces.byId(id)) {
+            sf->tiles = after;
+            sf->style = afterStyle;
+        }
+    };
+    return history.record(std::move(op));
+}
+
 } // namespace lumen

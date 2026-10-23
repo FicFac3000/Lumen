@@ -284,6 +284,32 @@ async def main(out):
                         "alignment never leaves an overlap",
                         "page still valid"))
 
+        # Arranging a surface is an edit, so it has to be undoable (§8.6).
+        # A conversion can drop tiles and an alignment moves several at once:
+        # neither is something anyone can put back by hand from memory.
+        before_undo = [(t["x"], t["y"], t["w"], t["h"])
+                       for t in state()["surfaces"][1]["tiles"]]
+        cmd("TileMove " + str(state()["surfaces"][1]["tiles"][0]["slot"] + 1) +
+            " 1 7")
+        await pg.wait_for_timeout(600)
+        after_move = [(t["x"], t["y"], t["w"], t["h"])
+                      for t in state()["surfaces"][1]["tiles"]]
+        results.append((before_undo != after_move, "a move changes the page",
+                        "moved"))
+        await pg.click(".wing-pages >> text=↶ Undo")
+        await pg.wait_for_timeout(800)
+        restored = [(t["x"], t["y"], t["w"], t["h"])
+                    for t in state()["surfaces"][1]["tiles"]]
+        results.append((restored == before_undo, "undo puts the tile back",
+                        "page restored exactly"))
+
+        # And the layout edit shows up in the history with its own scope,
+        # rather than being filed under something else.
+        hist = state()["history"]
+        results.append((any(h["scope"] == "layout" for h in hist),
+                        "layout edits have their own undo scope",
+                        f"{len(hist)} entries"))
+
         # §9.1: no two tiles may overlap on the canvas.
         clash = await pg.locator(".clash").count()
         results.append((clash == 0, "canvas has no overlapping tiles",
