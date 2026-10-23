@@ -3,7 +3,9 @@
 // one style to the other.
 #include "Check.hpp"
 
+#include "lumen/Command.hpp"
 #include "lumen/Surface.hpp"
+#include "lumen/SurfaceView.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -434,6 +436,137 @@ void testSelectionIsPerPageAndOrdered() {
     CHECK_EQ(f.store.selection(1).size(), size_t(1));
 }
 
+// §9.2: a tile's legend, colour and action are a VIEW of the object it points
+// at. The thing that must hold is that NOTHING is stored on the tile — rename
+// the object and every tile showing it follows, with no bookkeeping.
+void testTileViewIsAView() {
+    Engine eng;
+    Console con(eng);
+    installStarterTypes(eng.patch);
+    installStarterSurfaces(eng.surfaces);
+    con.executeAll("Fixture 1 Thru 4 Patch \"LED Par RGBW\" 4 1 1;"
+                   "Fixture 1 At 100;Store Cue 1 1;ClearAll;Assign 1 1");
+
+    GroupDef g;
+    g.id = 1;
+    g.name = "Front Wash";
+    g.members = {{1, 0}, {2, 0}, {3, 0}};
+    eng.groups.add(g);
+
+    eng.presets.ensurePool(1, "Colour", Group::Color);
+    Preset red;
+    red.id = 1;
+    red.name = "Red";
+    red.group = Group::Color;
+    red.values.set(0, 0, Attr::Red, Value::hard(1.f));
+    red.values.set(0, 0, Attr::Green, Value::hard(0.f));
+    red.values.set(0, 0, Attr::Blue, Value::hard(0.f));
+    eng.presets.add(1, red);
+
+    CHECK(con.executeAll("Surface 1;Tile 1 executor 1;Tile 2 group 1;"
+                         "Tile 3 preset 1.1;Tile 4 blackout;Tile 5 grandmaster")
+              .ok);
+    const Surface* sf = eng.surfaces.byId(1);
+    CHECK(sf != nullptr);
+
+    // Executor: legend, live state, a fader, and both press commands.
+    const TileView x = resolveTile(eng, *sf->atSlot(0));
+    CHECK(x.legend == "Exec 1" || !x.legend.empty());
+    CHECK(x.command == "Go 1");
+    CHECK(x.altCommand == "Off 1");
+    CHECK(x.levelCommand == "ExecMaster 1 %d");
+    CHECK(x.level >= 0.f);
+    CHECK(!x.missing);
+
+    // Group: a count, and NO fader — selection is not a level, and a fader
+    // would imply it were one.
+    const TileView gv = resolveTile(eng, *sf->atSlot(1));
+    CHECK(gv.legend == "Front Wash");
+    CHECK(gv.detail == "3 fixtures");
+    CHECK(gv.command == "Group 1");
+    CHECK(gv.level < 0.f);
+    CHECK(gv.levelCommand.empty());
+
+    // A colour preset carries the colour it actually produces. A palette of
+    // swatches that all render identically is one you read instead of see.
+    const TileView pv = resolveTile(eng, *sf->atSlot(2));
+    CHECK(pv.legend == "Red");
+    CHECK(pv.colour == "#ff0000");
+    CHECK(pv.hue == "colour");
+    CHECK(pv.command == "Preset 1.1");
+
+    // Blackout reflects state and offers the opposite action.
+    const TileView bv = resolveTile(eng, *sf->atSlot(3));
+    CHECK(!bv.live);
+    CHECK(bv.command == "Blackout on");
+    eng.blackout = true;
+    const TileView bv2 = resolveTile(eng, *sf->atSlot(3));
+    CHECK(bv2.live);
+    CHECK(bv2.command == "Blackout off");
+
+    // The grand master has a fader but NO press command: one that could be
+    // changed by a tap rather than a deliberate drag is a blackout waiting
+    // to happen.
+    const TileView mv = resolveTile(eng, *sf->atSlot(4));
+    CHECK(mv.level >= 0.f);
+    CHECK(mv.command.empty());
+    CHECK(mv.levelCommand == "GrandMaster %d");
+
+    // THE POINT: rename the object, and the tile follows with no write to
+    // the tile at all.
+    eng.groups.byId(1)->name = "Backlight";
+    CHECK(resolveTile(eng, *sf->atSlot(1)).legend == "Backlight");
+    CHECK(sf->atSlot(1)->legendOverride.empty());
+
+    // An override beats what the object implies, and survives the rename.
+    Tile overridden = *sf->atSlot(1);
+    overridden.legendOverride = "BACK";
+    CHECK(resolveTile(eng, overridden).legend == "BACK");
+}
+
+// A tile whose object is gone must be shown BROKEN, not omitted. Dropping it
+// would take its position with it, and on a wing position is the whole
+// bargain (§9.6).
+void testMissingTargetsAreVisible() {
+    Engine eng;
+    installStarterSurfaces(eng.surfaces);
+
+    Tile orphan;
+    orphan.kind = TileKind::Executor;
+    orphan.target = eng.uids.next();   // a UID nothing answers to
+    const TileView v = resolveTile(eng, orphan);
+    CHECK(v.missing);
+    CHECK(!v.legend.empty());
+    CHECK(v.command.empty());
+
+    for (TileKind k : {TileKind::Group, TileKind::Preset, TileKind::Recipe,
+                       TileKind::Timecode}) {
+        Tile t;
+        t.kind = k;
+        t.target = eng.uids.next();
+        const TileView tv = resolveTile(eng, t);
+        CHECK(tv.missing);
+        CHECK(tv.command.empty());
+    }
+
+    // A kind nothing drives yet says so, rather than drawing a tile that
+    // looks pressable and is not.
+    Tile laser;
+    laser.kind = TileKind::LaserZone;
+    CHECK(resolveTile(eng, laser).unsupported);
+
+    // A label points at nothing by design, so it is neither missing nor
+    // unsupported — it is just layout.
+    Tile label;
+    label.kind = TileKind::Label;
+    label.legendOverride = "FRONT OF HOUSE";
+    const TileView lv = resolveTile(eng, label);
+    CHECK(!lv.missing);
+    CHECK(!lv.unsupported);
+    CHECK(lv.legend == "FRONT OF HOUSE");
+    CHECK(lv.command.empty());
+}
+
 } // namespace
 
 int main() {
@@ -448,6 +581,8 @@ int main() {
     testSpreadAndFill();
     testAlignmentRefusedOnAWing();
     testSelectionIsPerPageAndOrdered();
+    testTileViewIsAView();
+    testMissingTargetsAreVisible();
     testValidation();
     testStoreKeepsBoth();
     return check::report("surface");

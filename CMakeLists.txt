@@ -41,6 +41,7 @@ add_library(lumen_core
   src/Laser.cpp
   src/Simulated.cpp
     src/Surface.cpp
+    src/SurfaceView.cpp
 )
 target_include_directories(lumen_core PUBLIC include)
 target_compile_options(lumen_core PRIVATE -Wall -Wextra -Wpedantic)

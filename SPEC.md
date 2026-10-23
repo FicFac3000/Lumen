@@ -1608,6 +1608,42 @@ Binds to the existing `Executor` model in the engine (fader, go/back/off).
 - **Label**, **divider**, **image** — pure layout, no action
 - `[open]` **Page link** tile, pending the nesting question above.
 
+#### 9.3.1 Resolution happens once, in the engine
+
+`[done-decision]` §9.2 makes a tile's legend, colour and symbol a *view* of
+the assigned object. That resolution lives in the **engine**
+(`resolveTile`), not in each interface that draws a surface. A second
+renderer that re-derived the legend would eventually derive it differently,
+and the whole point of storing a UID is that there is one answer.
+
+What a tile resolves to is everything an interface needs and nothing more:
+legend, detail line, symbol, colour, a coarse hue, **the command a press
+sends**, the command a right-press sends, whether it is live, and a fader
+position with the command that sets it. A tile *is* its command, so no
+renderer needs a switch over kinds to act on a press.
+
+Three things that fall out, each of which was a decision:
+
+- **A colour preset carries the colour it actually produces**, resolved
+  through the preset itself rather than guessed from its name. A palette of
+  swatches that all render identically is one you have to read instead of
+  see, which defeats having a palette.
+- **Only tiles with a level get a fader.** A group tile with one would imply
+  selection were a level. The grand master gets a fader and *no* press
+  command: one that could be changed by a tap rather than a deliberate drag
+  is a blackout waiting to happen.
+- **A tile whose object is gone is drawn BROKEN, not omitted.** Dropping it
+  would take its position with it, and on a wing position is the entire
+  bargain (§9.6). Likewise a kind nothing drives yet renders inert rather
+  than looking pressable.
+
+`[open]` **Laser zone tiles are deliberately unresolved.** The safety gate is
+not owned by the engine, and reaching around that to render a tile would be
+the first step towards arming a laser from somewhere §14.6 did not sanction.
+Where the gate lives is a real architectural question and should be decided
+on its own terms, not as a side effect of drawing a surface. **Macro** tiles
+are unresolved for the simpler reason that no macro object exists yet.
+
 ### 9.4 Edit mode vs run mode
 
 - Explicit toggle, with run mode the default. In run mode tiles cannot be
@@ -4058,6 +4094,7 @@ Engine and show model, with the command layer as the only mutation path:
 | Page style conversion, with a loss report | §9.7 | built |
 | Canvas drag, resize, alignment, run/edit lock | §9.8 | built |
 | Surface edits in the undo history | §9.8.1 | built |
+| Tile kinds: group, preset, recipe, timecode, masters, label | §9.3.1 | built |
 | Surfaces and tiles in the show file | §9.6, §17.7 | built |
 | Simulated output, laser and input | §21.3 | built |
 | Local server and browser console | §21.3 | built |

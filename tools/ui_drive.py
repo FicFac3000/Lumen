@@ -310,6 +310,59 @@ async def main(out):
                         "layout edits have their own undo scope",
                         f"{len(hist)} entries"))
 
+        # §9.3's other tile kinds. A tile that renders but does nothing, or
+        # resolves but does not render, is worse than one that is absent.
+        await pg.click(".style-pick >> text=Wing · wing")
+        await pg.wait_for_timeout(700)
+        page1 = state()["surfaces"][0]
+        kinds = {t["kind"] for t in page1["tiles"]}
+        results.append(({"executor", "group", "preset", "blackout",
+                         "grandmaster"} <= kinds,
+                        "the wing carries several tile kinds",
+                        ", ".join(sorted(kinds))))
+
+        drawn = await pg.locator(".wing-cell:not(.empty)").count()
+        results.append((drawn == len(page1["tiles"]),
+                        "every placed tile is drawn",
+                        f'{drawn} drawn of {len(page1["tiles"])}'))
+
+        # A colour preset shows the colour it produces, resolved by the
+        # engine rather than derived from its name.
+        swatch = next(t for t in page1["tiles"]
+                      if t["kind"] == "preset" and t["colour"])
+        results.append((swatch["colour"].startswith("#"),
+                        "a colour preset carries its real colour",
+                        f'{swatch["legend"]} {swatch["colour"]}'))
+
+        # Pressing a group tile selects, pressing a preset tile applies.
+        cmd("ClearAll")
+        await pg.wait_for_timeout(300)
+        gslot = next(t for t in page1["tiles"] if t["kind"] == "group")
+        await pg.locator(f".wing-cell:has-text('{gslot['legend']}')").first.click()
+        await pg.wait_for_timeout(700)
+        results.append((len(state()["programmer"]["selection"]) > 0,
+                        "a group tile selects",
+                        f'{len(state()["programmer"]["selection"])} fixtures'))
+
+        pslot = next(t for t in page1["tiles"] if t["kind"] == "preset")
+        await pg.locator(f".wing-cell:has-text('{pslot['legend']}')").first.click()
+        await pg.wait_for_timeout(700)
+        refs = [a for f in state()["fixtures"] if f["selected"]
+                for a in f["attrs"] if a["isRef"]]
+        results.append((len(refs) > 0, "a preset tile applies as a reference",
+                        f"{len(refs)} referenced values"))
+
+        # A blackout tile reflects state and toggles it.
+        bslot = next(t for t in page1["tiles"] if t["kind"] == "blackout")
+        await pg.locator(".wing-cell:has-text('Blackout')").first.click()
+        await pg.wait_for_timeout(700)
+        results.append((state()["blackout"] is True, "a blackout tile toggles",
+                        "blackout on"))
+        await pg.locator(".wing-cell:has-text('Blackout')").first.click()
+        await pg.wait_for_timeout(700)
+        results.append((state()["blackout"] is False, "and back off", "blackout off"))
+        del bslot
+
         # §9.1: no two tiles may overlap on the canvas.
         clash = await pg.locator(".clash").count()
         results.append((clash == 0, "canvas has no overlapping tiles",

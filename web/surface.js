@@ -27,46 +27,54 @@
 
 /* --------------------------------------------------------------- shared */
 
-/* §9.2: legend and colour are a VIEW of the assigned object, never typed.
- * The page stores a UID; this resolves it to whatever that object is now. */
-function tileExec(tile) {
-  return S.state.executors.find(e => e.id === tile.executor) || null;
-}
+/* §9.2: a tile's legend, colour and action are a VIEW of the assigned object,
+ * resolved by the ENGINE. Nothing here derives them — a second renderer that
+ * re-derived the legend would eventually derive it differently, and the whole
+ * point of storing a UID is that there is one answer. */
 
-function tileHue(x) {
-  if (x.chase) return 'chase';
-  const n = (x.sequenceName || x.label || '').toLowerCase();
-  if (n.includes('blind') || n.includes('white')) return 'blinder';
-  if (n.includes('spot') || n.includes('mover') || n.includes('pos')) return 'position';
-  if (n.includes('pixel') || n.includes('video')) return 'pixel';
-  if (n.includes('colour') || n.includes('color')) return 'colour';
-  return 'default';
-}
-
-function fmtRate(x) {
-  return x.chase ? x.rate.toFixed(1).replace(/\.0$/, '') + ' Hz' : '';
-}
-
-/* The fader strip on a tile. A command, like every other mutation. */
-function tileFader(x, tall) {
+/* The fader strip. Only tiles that actually have a level get one: a group
+ * tile with a fader would imply selection were a level. */
+function tileFader(tile, tall) {
+  if (tile.level < 0 || !tile.levelCommand) return null;
   const bar = el('div', 'x-fader' + (tall ? ' tall' : ''));
   const fill = el('i');
-  fill.style.height = Math.round(x.master * 100) + '%';
+  fill.style.height = Math.round(tile.level * 100) + '%';
   bar.appendChild(fill);
   bar.onclick = ev => {
     ev.stopPropagation();
     const r = bar.getBoundingClientRect();
     const v = Math.round((1 - (ev.clientY - r.top) / r.height) * 100);
-    send('ExecMaster ' + x.id + ' ' + Math.max(0, Math.min(100, v)));
+    send(tile.levelCommand.replace('%d', String(Math.max(0, Math.min(100, v)))));
   };
-  bar.title = 'Master ' + Math.round(x.master * 100) + '% — click to set';
+  bar.title = Math.round(tile.level * 100) + '% — click to set';
   return bar;
 }
 
-function wireTile(node, x) {
-  node.onclick = () => send('Go ' + x.id);
-  node.oncontextmenu = ev => { ev.preventDefault(); send('Off ' + x.id); };
-  node.title = (x.sequenceName || 'unassigned') + ' — click Go, right-click Off';
+function wireTile(node, tile) {
+  if (tile.missing) {
+    node.title = 'the object this tile pointed at is gone';
+    return;
+  }
+  if (tile.unsupported) {
+    node.title = 'nothing drives this kind of tile yet';
+    return;
+  }
+  if (tile.command) {
+    node.onclick = () => send(tile.command);
+    node.title = tile.command + (tile.altCommand ? ' · right-click: ' + tile.altCommand : '');
+  }
+  if (tile.altCommand)
+    node.oncontextmenu = ev => { ev.preventDefault(); send(tile.altCommand); };
+}
+
+/* A colour preset shows the colour it actually produces (§9.2). A palette of
+ * swatches that all render identically is one you have to read instead of
+ * see, which defeats having a palette. */
+function paintTile(node, tile) {
+  node.dataset.hue = tile.hue || 'default';
+  if (tile.colour) node.style.setProperty('--hue', tile.colour);
+  if (tile.missing) node.classList.add('broken');
+  if (tile.unsupported) node.classList.add('inert');
 }
 
 /* ----------------------------------------------------------- the wing */
@@ -88,24 +96,21 @@ function buildWing(body, page) {
   grid.style.gridTemplateColumns = 'repeat(' + page.cols + ', minmax(0, 1fr))';
   for (let i = 0; i < slots; ++i) {
     const tile = page.tiles.find(t => t.slot === i);
-    const x = tile ? tileExec(tile) : null;
-    const cell = el('div', 'wing-cell' + (x ? '' : ' empty') +
-                            (x && x.active ? ' live' : ''));
+    const cell = el('div', 'wing-cell' + (tile ? '' : ' empty') +
+                            (tile && tile.live ? ' live' : ''));
     cell.appendChild(el('span', 'w-num', String(i + 1)));
 
-    if (!x) {
+    if (!tile) {
       grid.appendChild(cell);
       continue;
     }
 
-    cell.dataset.hue = tileHue(x);
-    wireTile(cell, x);
-    cell.appendChild(el('div', 'w-name', tile.legend || x.label));
-    cell.appendChild(el('div', 'w-sub',
-      x.active ? ('CUE ' + x.cue + '/' + x.cues)
-               : (x.cues + ' CUE' + (x.cues === 1 ? '' : 'S'))));
-    if (x.chase) cell.appendChild(el('div', 'w-rate', fmtRate(x)));
-    cell.appendChild(tileFader(x, false));
+    paintTile(cell, tile);
+    wireTile(cell, tile);
+    cell.appendChild(el('div', 'w-name', tile.legend));
+    if (tile.detail) cell.appendChild(el('div', 'w-sub', tile.detail.toUpperCase()));
+    const fader = tileFader(tile, false);
+    if (fader) cell.appendChild(fader);
     grid.appendChild(cell);
   }
   body.appendChild(grid);
@@ -268,11 +273,9 @@ function buildCanvas(body, page) {
   canvas.style.gridTemplateColumns = 'repeat(' + page.cols + ', ' + CELL_W + 'px)';
 
   for (const tile of page.tiles) {
-    const x = tileExec(tile);
-    if (!x) continue;
-    const t = el('div', 'c-tile' + (x.active ? ' live' : '') +
+    const t = el('div', 'c-tile' + (tile.live ? ' live' : '') +
                         (tile.selected ? ' picked' : ''));
-    t.dataset.hue = tileHue(x);
+    paintTile(t, tile);
     t.style.gridColumn = (tile.x + 1) + ' / span ' + tile.w;
     t.style.gridRow = (tile.y + 1) + ' / span ' + tile.h;
 
@@ -300,32 +303,36 @@ function buildCanvas(body, page) {
       grip.onpointerdown = ev => beginDrag(ev, canvas, page, tile, 'resize');
       t.appendChild(grip);
     } else {
-      wireTile(t, x);
+      wireTile(t, tile);
     }
 
     // §9.2's density table, implemented rather than described.
     const area = tile.w * tile.h;
     const head = el('div', 'c-head');
-    head.appendChild(el('span', 'c-sym', x.chase ? '⟳' : '▶'));
-    if (tile.w >= 2) head.appendChild(el('span', 'c-name', tile.legend || x.label));
+    if (tile.symbol) head.appendChild(el('span', 'c-sym', tile.symbol));
+    if (tile.w >= 2) head.appendChild(el('span', 'c-name', tile.legend));
     t.appendChild(head);
 
-    if (area >= 4) {
-      t.appendChild(el('div', 'c-state',
-        x.active ? ('Cue ' + x.cue + ' of ' + x.cues) : (x.cues + ' cues · idle')));
-    }
+    if (area >= 4 && tile.detail) t.appendChild(el('div', 'c-state', tile.detail));
     if (area >= 6) {
-      const prog = el('div', 'c-prog');
-      const fill = el('i');
-      fill.style.width = Math.round((x.active ? x.fade : 0) * 100) + '%';
-      prog.appendChild(fill);
-      t.appendChild(prog);
-      t.appendChild(el('div', 'c-next',
-        x.chase ? fmtRate(x)
-                : ('next ' + (x.nextCue === null ? '—' : x.nextCue) +
-                   ' · ' + (x.nextFade || 0).toFixed(1) + 's')));
+      // Only an executor has a cue to be partway through; for everything
+      // else the extra room goes to the legend rather than to a bar that
+      // would always read zero.
+      const x = S.state.executors.find(e => tile.command === 'Go ' + e.id);
+      if (x) {
+        const prog = el('div', 'c-prog');
+        const fill = el('i');
+        fill.style.width = Math.round((x.active ? x.fade : 0) * 100) + '%';
+        prog.appendChild(fill);
+        t.appendChild(prog);
+        t.appendChild(el('div', 'c-next', x.chase
+          ? x.rate.toFixed(1).replace(/\.0$/, '') + ' Hz'
+          : 'next ' + (x.nextCue === null ? '—' : x.nextCue) + ' · ' +
+            (x.nextFade || 0).toFixed(1) + 's'));
+      }
     }
-    t.appendChild(tileFader(x, tile.h > 1));
+    const fader = tileFader(tile, tile.h > 1);
+    if (fader) t.appendChild(fader);
     canvas.appendChild(t);
   }
   body.appendChild(canvas);

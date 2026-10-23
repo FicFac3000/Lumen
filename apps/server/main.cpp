@@ -16,6 +16,7 @@
 #include "lumen/Show.hpp"
 #include "lumen/Simulated.hpp"
 #include "lumen/Surface.hpp"
+#include "lumen/SurfaceView.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -246,6 +247,21 @@ void buildDemoShow(Session& s) {
         }
     }
 
+    // §9.3's other tile types, so a surface is not just a row of executors.
+    // The wing's second row is where a busking operator keeps the things
+    // they reach for without looking.
+    con.executeAll(
+        "Surface 1;"
+        "Tile 11 group 1;"
+        "Tile 12 group 2;"
+        "Tile 13 group 3;"
+        "Tile 15 preset 1.1;"
+        "Tile 16 preset 1.2;"
+        "Tile 17 preset 1.4;"
+        "Tile 18 preset 2.1;"
+        "Tile 19 grandmaster;"
+        "Tile 20 blackout");
+
     // A binding set, so the Learn surface has something in it.
     con.execute("BindingSet \"Default\"");
 
@@ -397,17 +413,28 @@ std::string snapshot(Session& s) {
             j.member("y", t.rect.y);
             j.member("w", t.rect.w);
             j.member("h", t.rect.h);
-            j.member("legend", t.legendOverride);
             bool sel = false;
             for (Uid u : e.surfaces.selection(sf.id))
                 if (u == t.uid) sel = true;
             j.member("selected", sel);
-            // The tile stores a UID; the UI resolves it to whatever that
-            // object is called NOW (§9.2), so a rename needs nothing here.
-            int execId = 0;
-            for (const Executor& x : e.executors)
-                if (x.uid == t.target) execId = x.id;
-            j.member("executor", execId);
+
+            // The tile stores a UID, and the ENGINE resolves it to what that
+            // object is called now and what a press should send (§9.2). The
+            // interface draws the answer; it does not derive it, or a second
+            // renderer would eventually derive it differently.
+            const TileView v = resolveTile(e, t);
+            j.member("legend", v.legend);
+            j.member("detail", v.detail);
+            j.member("symbol", v.symbol);
+            j.member("colour", v.colour);
+            j.member("hue", v.hue);
+            j.member("command", v.command);
+            j.member("altCommand", v.altCommand);
+            j.member("live", v.live);
+            j.member("level", v.level);
+            j.member("levelCommand", v.levelCommand);
+            j.member("missing", v.missing);
+            j.member("unsupported", v.unsupported);
             j.endObject();
         }
         j.endArray();

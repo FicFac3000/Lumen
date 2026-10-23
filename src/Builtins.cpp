@@ -540,11 +540,13 @@ void Console::installBuiltins() {
         "Tile", {},
         {{"slot", ParamType::Int, true, "slot number on the page, 1-based"},
          {"kind", ParamType::Enum, true, "what the tile holds",
-          {"executor", "group", "preset", "empty"}},
-         {"target", ParamType::Int, false, "the object's id"}},
+          {"executor", "group", "preset", "recipe", "timecode", "grandmaster",
+           "blackout", "laserzone", "label", "empty"}},
+         {"target", ParamType::String, false,
+          "the object's id; pool.id for a preset, the text for a label"}},
         Privilege::Operator, false, false,
-        "Assigns a tile on the current surface page. `Tile 3 executor 2` "
-        "(SPEC 9.2).",
+        "Assigns a tile on the current surface page. `Tile 3 executor 2`, "
+        "`Tile 4 preset 1.3`, `Tile 5 blackout` (SPEC 9.2, 9.3).",
         [](Context& ctx) -> Result {
             auto& store = ctx.engine.surfaces;
             const int page = store.current();
@@ -572,22 +574,77 @@ void Console::installBuiltins() {
 
             // The tile stores the object's UID, never its name (§8.1, §9.2),
             // so the legend follows a rename with no bookkeeping anywhere.
-            const int targetId = static_cast<int>(ctx.number(2, 0));
+            const std::string ref = ctx.text(2);
+            const int targetId = ctx.arg(2) ? static_cast<int>(ctx.number(2, 0)) : 0;
             Uid target{};
-            if (*kind == TileKind::Executor) {
-                const Executor* x = ctx.engine.executor(targetId);
-                if (!x) return Result::bad("no executor " + std::to_string(targetId));
-                target = x->uid;
-            } else if (*kind == TileKind::Group) {
-                const GroupDef* g = ctx.engine.groups.byId(targetId);
-                if (!g) return Result::bad("no group " + std::to_string(targetId));
-                target = g->uid;
-            } else if (*kind == TileKind::Preset) {
-                return Result::bad("preset tiles need pool.id — not yet wired");
+            std::string legend;
+
+            switch (*kind) {
+                case TileKind::Executor: {
+                    const Executor* x = ctx.engine.executor(targetId);
+                    if (!x) return Result::bad("no executor " + std::to_string(targetId));
+                    target = x->uid;
+                    break;
+                }
+                case TileKind::Group: {
+                    const GroupDef* g = ctx.engine.groups.byId(targetId);
+                    if (!g) return Result::bad("no group " + std::to_string(targetId));
+                    target = g->uid;
+                    break;
+                }
+                case TileKind::Preset: {
+                    // `pool.id`, the same dotted form the Preset command takes.
+                    // One grammar for addressing a preset, not two.
+                    const size_t dot = ref.find('.');
+                    if (dot == std::string::npos)
+                        return Result::bad("a preset tile needs pool.id, as in "
+                                           "`Tile " + std::to_string(slot + 1) +
+                                           " preset 1.3`");
+                    const PresetPool* pool =
+                        ctx.engine.presets.pool(std::atoi(ref.substr(0, dot).c_str()));
+                    if (!pool) return Result::bad("no preset pool in " + ref);
+                    const Preset* pre =
+                        pool->byId(std::atoi(ref.substr(dot + 1).c_str()));
+                    if (!pre) return Result::bad("no preset " + ref);
+                    target = pre->uid;
+                    break;
+                }
+                case TileKind::Recipe: {
+                    const Recipe* r = nullptr;
+                    for (const Recipe& e : ctx.engine.recipes.all())
+                        if (e.id == targetId) r = &e;
+                    if (!r) return Result::bad("no recipe " + std::to_string(targetId));
+                    target = r->uid;
+                    break;
+                }
+                case TileKind::Timecode: {
+                    const TimecodeSlot* t = ctx.engine.timecode.slot(targetId);
+                    if (!t)
+                        return Result::bad("no timecode slot " + std::to_string(targetId));
+                    target = t->uid;
+                    break;
+                }
+                case TileKind::Label:
+                    // A label carries its text rather than pointing at
+                    // anything, which is the one case where the override IS
+                    // the content.
+                    legend = ref;
+                    break;
+                case TileKind::GrandMaster:
+                case TileKind::Blackout:
+                case TileKind::LaserZone:
+                case TileKind::Macro:
+                    // These address a thing the console has exactly one of,
+                    // or none yet. Nothing to point at.
+                    if (!ref.empty()) legend = ref;
+                    break;
+                case TileKind::Empty:
+                case TileKind::Count:
+                    break;
             }
 
-            const std::string what = std::string(tileKindName(*kind)) + " " +
-                                     std::to_string(targetId) + " on slot " +
+            const std::string what = std::string(tileKindName(*kind)) +
+                                     (ref.empty() ? "" : " " + ref) + " on slot " +
                                      std::to_string(slot + 1);
             SurfaceEdit undo(ctx.engine, what, page);
             PlaceResult r = (s->style == SurfaceStyle::Wing)
@@ -599,6 +656,9 @@ void Console::installBuiltins() {
                 undo.cancel();
                 return Result::bad(r.error);
             }
+            if (!legend.empty())
+                for (Tile& t : s->tiles)
+                    if (t.uid == r.placed) t.legendOverride = legend;
             undo.commit(ctx.engine.history, ctx.engine);
             ctx.engine.actionLog.add(what, "layout", ctx.source, ctx.prompt);
             return Result::good(what);

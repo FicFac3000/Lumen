@@ -512,3 +512,25 @@ tr.clickable:hover td { background: rgba(255, 255, 255, 0.04); }
 .grip:hover { opacity: 1; }
 
 .wing-pages button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ------------------------------------------- more tile kinds (§9.3) */
+[data-hue=group]     { --hue: #7dd3fc; }
+[data-hue=intensity] { --hue: #ffd166; }
+[data-hue=beam]      { --hue: #c4b5fd; }
+[data-hue=control]   { --hue: #94a3b8; }
+[data-hue=recipe]    { --hue: #f0abfc; }
+[data-hue=warn]      { --hue: var(--warn); }
+[data-hue=label]     { --hue: transparent; }
+
+/* A tile whose object is gone is shown BROKEN, not omitted: dropping it
+ * would take its position with it, and on a wing position is the bargain. */
+.broken { opacity: 0.55; }
+.broken .w-name, .broken .c-name { color: var(--warn); text-decoration: line-through; }
+/* Known kind, nothing driving it yet — flat rather than pressable-looking. */
+.inert { opacity: 0.5; cursor: default; }
+
+/* A label is layout, not a control: no border, no press, no fader. */
+[data-hue=label] { border-left-color: transparent; background: transparent; }
+[data-hue=label] .w-name, [data-hue=label] .c-name {
+  color: var(--dim); text-transform: uppercase; letter-spacing: 1.2px; font-size: 10px;
+}
