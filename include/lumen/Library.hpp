@@ -82,6 +82,10 @@ public:
     const LibraryEntry* byName(const std::string& name) const;
     const std::deque<LibraryEntry>& all() const { return entries_; }
     size_t size() const { return entries_.size(); }
+    // Erasing invalidates EVERY reference into the library, not just the
+    // one removed: deque keeps references stable across growth, which is a
+    // different promise from keeping them across erasure. Re-look-up after
+    // a remove rather than holding a reference over one.
     bool remove(Uid uid);
 
     // Imports a .gdtf package, keeping its bytes. The report's warnings carry

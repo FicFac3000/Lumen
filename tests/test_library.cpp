@@ -480,10 +480,16 @@ static void testLibraryStoreBasics() {
     // stored against either finds the same fixture.
     CHECK(a.def.uid == a.uid);
 
-    CHECK(lib.remove(a.uid));
+    // Capture the UID before removing. `a` is a reference INTO the deque,
+    // and erasing from the middle of a deque invalidates every reference to
+    // it — the stores use deque so references survive GROWTH, which is not
+    // the same promise. Reading `a.uid` after the erase is a use-after-free
+    // that happens to return the right number most of the time.
+    const Uid removed = a.uid;
+    CHECK(lib.remove(removed));
     CHECK_EQ(lib.size(), size_t(1));
-    CHECK(!lib.remove(a.uid));
-    CHECK(!lib.markEdited(a.uid));
+    CHECK(!lib.remove(removed));
+    CHECK(!lib.markEdited(removed));
 
     // An empty or malformed package is refused with a reason.
     CHECK(!lib.importPackage({}, "x.gdtf").ok);

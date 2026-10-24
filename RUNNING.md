@@ -65,3 +65,19 @@ failing obscurely.
 Transports only, each blocked on a device rather than a decision: MIDI and
 OSC sockets, Art-Net and sACN on the wire, laser DACs. The layers above all
 of them are built and tested — see §21.3 of SPEC.md.
+
+## Checking for undefined behaviour
+
+Two use-after-frees hid in the tests for months — both read as ordinary
+code, both worked on Linux and failed on macOS. The sanitisers find that
+class of bug on any platform:
+
+    cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+    cmake --build build-asan -j
+    ctest --test-dir build-asan
+
+Slower, so it is not the default — but worth running before trusting a
+change, and worth running on a platform you have not built on before. A
+green suite on one machine is not evidence of correctness when the bug is
+undefined behaviour; it only means that machine's allocator was forgiving.
