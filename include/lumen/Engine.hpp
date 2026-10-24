@@ -7,6 +7,7 @@
 #include "lumen/Group.hpp"
 #include "lumen/Input.hpp"
 #include "lumen/Laser.hpp"
+#include "lumen/Mapping.hpp"
 #include "lumen/Library.hpp"
 #include "lumen/Output.hpp"
 #include "lumen/Patch.hpp"
@@ -123,6 +124,19 @@ public:
     GroupStore groups{uids};
     PresetStore presets{uids};
     RecipeLibrary recipes{uids};
+    // Pixel extraction (§13.3). Mapped content is a PLAYBACK, not a special
+    // case: each layer carries a priority, a merge rule and an intensity
+    // master, and resolves against executors by the same §11.4 rules. That
+    // is the thing neither reference tool can do — HTP a video look over a
+    // conventional wash without leaving the console.
+    //
+    // The frame itself is owned here but filled by whatever renderer exists:
+    // §13.1's boundary runs one way, so nothing downstream knows or cares
+    // whether a GPU, a file or a test produced it.
+    ExtractionStore extractions{uids};
+    RasterFrame frame;
+    ExtractionReport lastExtraction;
+
     // The laser safety gate (§14.6.1). The ZONES are show data — a mask, a
     // power ceiling, an audience-scanning flag — so they must be saved and
     // loaded like anything else, which means the engine has to own them.

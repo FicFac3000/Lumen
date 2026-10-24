@@ -14,11 +14,13 @@
 #include "lumen/Command.hpp"
 #include "lumen/Laser.hpp"
 #include "lumen/Show.hpp"
+#include "lumen/Mapping.hpp"
 #include "lumen/Simulated.hpp"
 #include "lumen/Surface.hpp"
 #include "lumen/SurfaceView.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -268,6 +270,36 @@ void buildDemoShow(Session& s) {
 
     // A binding set, so the Learn surface has something in it.
     con.execute("BindingSet \"Default\"");
+
+    // §13: a test pattern in the frame, and the pixel bar mapped across it.
+    // No renderer exists yet — and does not need to, because §13.1's
+    // boundary runs one way: everything downstream works on a RasterFrame
+    // whatever filled it. A GPU slots in behind this without the extraction
+    // side changing at all.
+    e.frame.resize(192, 108);
+    for (int y = 0; y < e.frame.height(); ++y) {
+        for (int x = 0; x < e.frame.width(); ++x) {
+            const float u = static_cast<float>(x) /
+                            static_cast<float>(e.frame.width() - 1);
+            const float v = static_cast<float>(y) /
+                            static_cast<float>(e.frame.height() - 1);
+            e.frame.set(x, y,
+                        RasterFrame::Rgb{
+                            static_cast<uint8_t>(u * 255.f),
+                            static_cast<uint8_t>((1.f - std::abs(v - 0.5f) * 2.f) * 255.f),
+                            static_cast<uint8_t>((1.f - u) * 255.f)});
+        }
+    }
+    {
+        Extraction wall;
+        wall.name = "Pixel Bar";
+        wall.merge = MergeRule::HTP;
+        wall.priority = 5;
+        std::vector<Target> cells;
+        for (CellId c = 1; c <= 12; ++c) cells.push_back({201, c});
+        wall.setPoints(layoutLine(cells, 0.05f, 0.5f, 0.95f, 0.5f));
+        e.extractions.add(std::move(wall));
+    }
 
     // A timecode slot.
     e.timecode.add("Show", TimecodeSource::Internal, FrameRate::Fps25);

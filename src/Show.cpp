@@ -1,3 +1,4 @@
+#include "lumen/Mapping.hpp"
 #include "lumen/Show.hpp"
 
 #include <sqlite3.h>
@@ -404,6 +405,23 @@ CREATE TABLE IF NOT EXISTS binding (
   rel_scale REAL NOT NULL, toggle_state INTEGER NOT NULL,
   FOREIGN KEY(set_uid) REFERENCES binding_set(uid) ON DELETE CASCADE);
 
+-- Pixel extraction (SPEC 13.3). The LAYER and its sample points are show
+-- data: a mapping is hours of work and belongs to the rig, not the session.
+-- What is absent is any trace of the raster — §13.1's boundary runs one way,
+-- and baking two million sampled values into a show file is exactly the
+-- thing that rule exists to prevent.
+CREATE TABLE IF NOT EXISTS extraction (
+  uid INTEGER PRIMARY KEY, eid INTEGER NOT NULL, name TEXT NOT NULL,
+  priority INTEGER NOT NULL, merge_rule INTEGER NOT NULL,
+  master REAL NOT NULL, enabled INTEGER NOT NULL, ord INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS sample_point (
+  extraction_uid INTEGER NOT NULL, ord INTEGER NOT NULL,
+  fixture INTEGER NOT NULL, cell INTEGER NOT NULL,
+  x REAL NOT NULL, y REAL NOT NULL,
+  area INTEGER NOT NULL, radius REAL NOT NULL, enabled INTEGER NOT NULL,
+  FOREIGN KEY(extraction_uid) REFERENCES extraction(uid) ON DELETE CASCADE);
+
 -- Laser zones (SPEC 14.6.1). The zone is SHOW data — a mask, a power
 -- ceiling, an audience-scanning flag — so it travels with the show. What is
 -- deliberately absent is any column for `armed`: a file that could restore a
@@ -446,6 +464,7 @@ CREATE TABLE IF NOT EXISTS action_log (
   scope TEXT NOT NULL, source TEXT NOT NULL, prompt TEXT NOT NULL,
   undone INTEGER NOT NULL, ord INTEGER NOT NULL);
 
+CREATE INDEX IF NOT EXISTS ix_sample_extraction ON sample_point(extraction_uid, ord);
 CREATE INDEX IF NOT EXISTS ix_tile_surface ON surface_tile(surface_uid, ord);
 CREATE INDEX IF NOT EXISTS ix_cue_seq ON cue(seq_uid, idx);
 CREATE INDEX IF NOT EXISTS ix_lib_chan ON library_channel(library_uid, mode_ord, ord);
@@ -1206,6 +1225,43 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
                   .bind(3, e.def.revisions[ri].text)
                   .bind(4, e.def.revisions[ri].date);
                 if (!lr.run()) return fail("write library revision");
+            }
+        }
+    }
+
+    // --- pixel extraction (§13.3) -----------------------------------------
+    {
+        Stmt ex(db, "INSERT INTO extraction(uid,eid,name,priority,merge_rule,master,"
+                    "enabled,ord) VALUES(?,?,?,?,?,?,?,?)");
+        Stmt sp(db, "INSERT INTO sample_point(extraction_uid,ord,fixture,cell,x,y,"
+                    "area,radius,enabled) VALUES(?,?,?,?,?,?,?,?,?)");
+        if (!ex.valid() || !sp.valid()) return fail("prepare extraction");
+        int ord = 0;
+        for (const Extraction& e : eng.extractions.all()) {
+            ex.reset();
+            ex.bindUid(1, e.uid)
+              .bind(2, e.id)
+              .bind(3, e.name)
+              .bind(4, e.priority)
+              .bind(5, static_cast<int>(e.merge))
+              .bind(6, static_cast<double>(e.master))
+              .bind(7, e.enabled ? 1 : 0)
+              .bind(8, ord++);
+            if (!ex.run()) return fail("write extraction");
+
+            int pord = 0;
+            for (const SamplePoint& p : e.points) {
+                sp.reset();
+                sp.bindUid(1, e.uid)
+                  .bind(2, pord++)
+                  .bind(3, static_cast<int>(p.target.fixture))
+                  .bind(4, static_cast<int>(p.target.cell))
+                  .bind(5, static_cast<double>(p.x))
+                  .bind(6, static_cast<double>(p.y))
+                  .bind(7, static_cast<int>(p.area))
+                  .bind(8, static_cast<double>(p.radius))
+                  .bind(9, p.enabled ? 1 : 0);
+                if (!sp.run()) return fail("write sample point");
             }
         }
     }
@@ -2068,6 +2124,49 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
         }
     }
 
+    // --- pixel extraction -------------------------------------------------
+    ExtractionStore extractions(eng.uids);
+    {
+        Stmt ex(db, "SELECT uid,eid,name,priority,merge_rule,master,enabled "
+                    "FROM extraction ORDER BY ord");
+        if (ex.valid()) {
+            while (ex.step()) {
+                Extraction e;
+                e.uid = ex.uid(0);
+                e.id = ex.i32(1);
+                e.name = ex.text(2);
+                e.priority = ex.i32(3);
+                e.merge = ex.i32(4) == static_cast<int>(MergeRule::HTP)
+                              ? MergeRule::HTP
+                              : MergeRule::LTP;
+                e.master = static_cast<float>(ex.dbl(5));
+                e.enabled = ex.i32(6) != 0;
+                eng.uids.observe(e.uid);
+
+                Stmt sp(db, "SELECT fixture,cell,x,y,area,radius,enabled "
+                            "FROM sample_point WHERE extraction_uid=? ORDER BY ord");
+                sp.bindUid(1, e.uid);
+                while (sp.step()) {
+                    SamplePoint p;
+                    p.target.fixture = static_cast<FixtureId>(sp.i64(0));
+                    p.target.cell = static_cast<CellId>(sp.i32(1));
+                    p.x = static_cast<float>(sp.dbl(2));
+                    p.y = static_cast<float>(sp.dbl(3));
+                    const int area = sp.i32(4);
+                    p.area = (area == static_cast<int>(SampleArea::Point))
+                                 ? SampleArea::Point
+                                 : (area == static_cast<int>(SampleArea::Gaussian))
+                                       ? SampleArea::Gaussian
+                                       : SampleArea::Box;
+                    p.radius = static_cast<float>(sp.dbl(5));
+                    p.enabled = sp.i32(6) != 0;
+                    e.points.push_back(p);
+                }
+                extractions.restore(std::move(e));
+            }
+        }
+    }
+
     // --- laser zones ------------------------------------------------------
     // Into a local, like everything else here: a load that fails after this
     // point must leave the engine as it was, not half-replaced.
@@ -2251,6 +2350,7 @@ LoadReport ShowFile::load(Engine& eng, const std::string& path) {
     eng.presets = std::move(presets);
     eng.recipes = std::move(recipes);
     eng.surfaces = std::move(surfaces);
+    eng.extractions = std::move(extractions);
     // Zones are replaced wholesale, and then §14.6's fail-safe runs because
     // its defaults list "on show load" explicitly. restoreZone already
     // refuses to bring arming back; this is the second belt, and it is the

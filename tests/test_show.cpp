@@ -2,6 +2,7 @@
 #include "Check.hpp"
 
 #include "lumen/Command.hpp"
+#include "lumen/Mapping.hpp"
 #include "lumen/Show.hpp"
 
 #include <sqlite3.h>
@@ -1037,12 +1038,102 @@ static void testLaserZonesRoundTripButNeverArmed() {
     fs::remove(path);
 }
 
+
+// §13.3: a mapping is hours of work and belongs to the rig, so the layer and
+// its sample points travel with the show. What must NOT travel with it is
+// any trace of the raster — §13.1's boundary runs one way, and baking two
+// million sampled values into a file is exactly what that rule prevents.
+static void testExtractionRoundTrip() {
+    const std::string path = tmpDir() + "/mapping.lumen";
+    fs::remove(path);
+
+    Engine a;
+    buildShow(a);
+
+    Extraction wall;
+    wall.name = "Back Wall";
+    wall.priority = 7;
+    wall.merge = MergeRule::HTP;
+    wall.master = 0.6f;
+    std::vector<Target> cells;
+    for (CellId c = 1; c <= 12; ++c) cells.push_back({201, c});
+    wall.setPoints(layoutLine(cells, 0.05f, 0.5f, 0.95f, 0.5f));
+    for (SamplePoint& p : wall.points) {
+        p.area = SampleArea::Gaussian;
+        p.radius = 0.03f;
+    }
+    wall.points[3].enabled = false;     // one point deliberately off
+    a.extractions.add(wall);
+
+    Extraction off;
+    off.name = "Spare";
+    off.enabled = false;
+    a.extractions.add(off);
+
+    // Give the engine a frame, so the save has a raster in front of it and
+    // the absence of raster columns is a real result rather than a vacuous
+    // one.
+    a.frame.resize(64, 64);
+    a.frame.fill(255, 128, 0);
+
+    CHECK(ShowFile::save(a, path, "Mapping").ok);
+
+    Engine b;
+    const LoadReport lr = ShowFile::load(b, path);
+    CHECK(lr.ok);
+    CHECK(lr.warnings.empty());
+    CHECK_EQ(b.extractions.size(), size_t(2));
+
+    const Extraction* w = b.extractions.byName("Back Wall");
+    CHECK(w != nullptr);
+    CHECK(w && w->priority == 7);
+    CHECK(w && w->merge == MergeRule::HTP);
+    CHECK_NEAR(w ? w->master : 0.f, 0.6f);
+    CHECK(w && w->enabled);
+    CHECK_EQ(w ? w->points.size() : 0u, size_t(12));
+
+    // Per-cell targets survive, which is what makes one patch entry carry
+    // twelve sample points (§1.3).
+    CHECK(w && w->pointFor({201, 1}) != nullptr);
+    CHECK(w && w->pointFor({201, 12}) != nullptr);
+    CHECK_NEAR(w && w->pointFor({201, 1}) ? w->pointFor({201, 1})->x : 0.f, 0.05f);
+    CHECK(w && w->pointFor({201, 1})->area == SampleArea::Gaussian);
+    CHECK_NEAR(w && w->pointFor({201, 1}) ? w->pointFor({201, 1})->radius : 0.f, 0.03f);
+
+    // Point ORDER survives, because it is selection order and selection
+    // order is information everywhere else (§20.4).
+    for (size_t i = 1; i < w->points.size(); ++i)
+        CHECK(w->points[i].x > w->points[i - 1].x);
+
+    // A disabled point stays disabled, and a disabled LAYER stays disabled.
+    CHECK(w && !w->points[3].enabled);
+    const Extraction* sp = b.extractions.byName("Spare");
+    CHECK(sp && !sp->enabled);
+
+    // THE POINT: no raster came back. A loaded show has a mapping and no
+    // pixels, which is the §13.1 boundary holding across a file.
+    CHECK(b.frame.empty());
+
+    // And the restored mapping works: give the new engine a frame and the
+    // same fixtures light.
+    b.frame.resize(64, 64);
+    b.frame.fill(255, 128, 0);
+    OutputLayer out;
+    const ExtractionReport rep = b.extractions.mergeInto(b.frame, out);
+    CHECK_EQ(rep.sampled, 11);       // twelve points, one disabled
+    CHECK_EQ(rep.disabled, 1);
+    CHECK(out.get(makeKey(201, 1, Attr::Red)).has_value());
+
+    fs::remove(path);
+}
+
 int main() {
     std::printf("lumen show\n");
     testRoundTrip();
     testGroupsPresetsRecipesRoundTrip();
     testSurfacesRoundTrip();
     testLaserZonesRoundTripButNeverArmed();
+    testExtractionRoundTrip();
     testShowFilesThroughTheConsole();
     testLoadedShowRuns();
     testUidsNotReused();

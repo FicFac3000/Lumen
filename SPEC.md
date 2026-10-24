@@ -2527,6 +2527,85 @@ without leaving the console.
   storable as a snapshot? Leaning no: that would bake 2 million values into a
   show file.
 
+### 13.3.1 Built: extraction, without a renderer
+
+`[done-decision]` The boundary in §13.1 runs one way, and that is what makes
+the control half of §13 buildable before the raster half exists. Everything
+below works on a `RasterFrame` **whatever filled it** — a GPU, a file, a test
+pattern — so a renderer slots in behind the same interface with nothing here
+changing.
+
+What is built: the frame, sampling, the layout tools, and extraction as a
+merge layer. What is not: decoding video, running shaders, talking to a GPU
+or a frame-share transport. Those need a machine with a screen, and are
+deferred on exactly the same terms as the MIDI and Art-Net transports.
+
+**Mapping space is normalised 0..1, y downward.** Normalised so a layout
+survives a change of output resolution — the thing that otherwise breaks
+every mapping the first time a projector is swapped. Downward because every
+image format and every GPU readback is top-down, and the alternative is
+flipping once, somewhere, and having content upside down in exactly one of
+the preview and the output.
+
+#### The edge rule, which is easy to get backwards
+
+`[done-decision]` Two different things look alike and must not be treated
+alike:
+
+| Situation | Answer |
+|---|---|
+| A sample **window** hangs off the edge of the buffer | Average only the pixels that exist |
+| A sample point's **centre** is off the surface | Dark, and counted as `offSurface` |
+
+The first is an artifact of the buffer ending: content does not stop at the
+edge, the texture does, and a fixture mapped to the very edge of a white
+surface should read white. Counting the missing pixels as black would dim
+every strip that runs wall to wall, which is most of them.
+
+The second is a real mapping problem, and it should be visible as a number
+rather than as fixtures that mysteriously stopped responding.
+
+I had this backwards first and the tests caught it, which is the argument for
+writing the edge case down rather than discovering it on a wall.
+
+#### The master scales before the merge, not after
+
+`[done-decision]` An extraction layer's intensity master scales what the layer
+**contributes**, not what it wins with. Scaling afterwards would let a faded
+extraction win an HTP comparison at full and then be turned down — so a video
+look at 10% would still beat a conventional wash at 80%, which is the
+opposite of what the fader appears to promise.
+
+#### One priority space
+
+`[done-decision]` An extraction layer applies **its own** merge rule against
+whatever is underneath, whether that came from another extraction or from a
+cue, resolving by priority then id — the same order `mergePlaybacks` uses.
+Mapped content and conventional playback therefore share one set of rules, so
+"let this cue win over the video" is the same operation as "let this cue win
+over that cue", not a second mechanism to learn.
+
+One consequence worth stating because it surprised me while testing: layers
+resolve **lowest priority first**, so a low layer still on LTP will replace a
+cue's value before a higher HTP layer ever compares against it. HTP over a
+cue means every layer below the comparison has to be HTP too. That is the
+same rule executors follow, and it is no more obvious there.
+
+| Command | Does |
+|---|---|
+| `Extraction [id] [name]` | creates or lists layers |
+| `MapLayout <layer> grid\|line\|bezier …` | places the selection's sample points |
+| `MapArea <layer> point\|box\|gaussian [radius]` | how each point samples |
+| `MapMaster <layer> <percent>` | the layer's intensity master |
+| `MapMerge <layer> htp\|ltp [priority]` | how it resolves against everything else |
+
+Layers and their sample points persist; **no raster ever does.** A loaded
+show has a mapping and no pixels, which is §13.1 holding across a file.
+
+`[flag]` Bezier layouts space points by **curve parameter, not arc length**,
+so points bunch where the curve is tight. Honest rather than ideal; arc-length
+spacing wants a length table and its own pass.
+
 ### 13.4 Composition
 
 - Layer stack with blend modes, opacity, layer-level FX.
@@ -4157,6 +4236,8 @@ Engine and show model, with the command layer as the only mutation path:
 | Tile kinds: group, preset, recipe, timecode, masters, label | §9.3.1 | built |
 | Laser gate owned by the engine; zones persist | §14.6.1 | built |
 | Arming carries its physical source; no Arm command | §14.6.1 | built |
+| Pixel extraction, sampling, layouts, merge layer | §13.2, §13.3.1 | built |
+| Mappings persist; rasters never do | §13.1, §13.3.1 | built |
 | Surfaces and tiles in the show file | §9.6, §17.7 | built |
 | Simulated output, laser and input | §21.3 | built |
 | Local server and browser console | §21.3 | built |
@@ -4166,6 +4247,7 @@ Not started, and each blocked on a device rather than a decision: MIDI and OSC
 transports, Art-Net and sACN on the wire (§18), laser DACs (§14.7), hardware
 surfaces (§19).
 
-Not started, and not blocked: pixel and video (§13), session networking
+Not started, and not blocked: the raster half of §13 (a renderer, media
+decode, ISF shaders — these want a machine with a screen), session networking
 (§18.7), Lua plugins and the agent (§16.3, §16.4), 3D authoring (§17.4
 stages 2–4), the native renderer (§2).

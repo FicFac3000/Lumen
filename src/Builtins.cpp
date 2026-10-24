@@ -6,6 +6,7 @@
 #include "lumen/Command.hpp"
 #include "lumen/Gdtf.hpp"
 #include "lumen/Library.hpp"
+#include "lumen/Mapping.hpp"
 #include "lumen/Undo.hpp"
 #include "lumen/Mvr.hpp"
 #include "lumen/Show.hpp"
@@ -668,6 +669,163 @@ void Console::installBuiltins() {
             undo.commit(ctx.engine.history, ctx.engine);
             ctx.engine.actionLog.add(what, "layout", ctx.source, ctx.prompt);
             return Result::good(what);
+        }});
+
+    // ------------------------------------------- pixel extraction (§13.3)
+    registry_.add({
+        "Extraction", {"extract"},
+        {{"id", ParamType::Int, false, "layer id; lists them if omitted"},
+         {"name", ParamType::String, false, "name it, creating it if new"}},
+        Privilege::Operator, false, false,
+        "Creates or lists pixel-extraction layers. Mapped content is a "
+        "playback, so a layer has a priority and a merge rule (SPEC 13.3).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.extractions;
+            if (!ctx.arg(0)) {
+                Result r = Result::good(plural(store.size(), "layer", "layers"));
+                for (const Extraction& e : store.all())
+                    r.rows.push_back(
+                        std::to_string(e.id) + " " + e.name + "  " +
+                        plural(e.points.size(), "point", "points") + "  prio " +
+                        std::to_string(e.priority) + "  " +
+                        (e.merge == MergeRule::HTP ? "HTP" : "LTP") +
+                        (e.enabled ? "" : "  [off]"));
+                return r;
+            }
+            const int id = static_cast<int>(ctx.number(0, 0));
+            Extraction* e = store.byId(id);
+            if (!e) {
+                Extraction made;
+                made.id = id;
+                made.name = ctx.text(1);
+                e = &store.add(made);
+                return Result::good("created extraction layer " +
+                                    std::to_string(e->id) + " (" + e->name + ")");
+            }
+            if (ctx.arg(1)) e->name = ctx.text(1);
+            return Result::good("layer " + std::to_string(e->id) + " (" + e->name +
+                                "), " + plural(e->points.size(), "point", "points"));
+        }});
+
+    registry_.add({
+        "MapLayout", {},
+        {{"layer", ParamType::Int, true, "extraction layer id"},
+         {"shape", ParamType::Enum, true, "how to place them",
+          {"grid", "line", "bezier"}},
+         {"a", ParamType::Float, false, "grid: columns · line/bezier: x0 as a percent"},
+         {"b", ParamType::Float, false, "y0"},
+         {"c", ParamType::Float, false, "x1"},
+         {"d", ParamType::Float, false, "y1"}},
+        Privilege::Operator, false, true,
+        "Places the selection's sample points. Mapping space is 0-100 across "
+        "the surface, y downward (SPEC 13.2).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.extractions;
+            const int id = static_cast<int>(ctx.number(0, 0));
+            Extraction* e = store.byId(id);
+            if (!e) return Result::bad("no extraction layer " + std::to_string(id));
+
+            const auto targets = effectiveTargets(ctx);
+            if (targets.empty()) return Result::bad("nothing selected");
+
+            // Percentages at the command line, normalised inside: 0-100 is
+            // what every other spatial figure in this console uses, and one
+            // command taking 0-1 would be the odd one out.
+            auto frac = [&](size_t i, double fallback) {
+                return static_cast<float>(ctx.number(i, fallback) / 100.0);
+            };
+
+            const std::string shape = ctx.text(1);
+            std::vector<SamplePoint> points;
+            if (shape == "grid") {
+                const int cols = static_cast<int>(ctx.number(2, 8));
+                if (cols <= 0) return Result::bad("a grid needs at least one column");
+                points = layoutGrid(targets, cols, frac(3, 0), frac(4, 0),
+                                    frac(5, 100), frac(6, 100));
+            } else if (shape == "line") {
+                points = layoutLine(targets, frac(2, 0), frac(3, 50), frac(4, 100),
+                                    frac(5, 50));
+            } else {
+                // A bow between the endpoints, which is the curve an LED
+                // strip is usually bent into and saves typing four handles.
+                const float x0 = frac(2, 0), y0 = frac(3, 50);
+                const float x1 = frac(4, 100), y1 = frac(5, 50);
+                const float bow = 0.25f;
+                points = layoutBezier(targets, x0, y0, x0 + (x1 - x0) * 0.33f,
+                                      y0 - bow, x0 + (x1 - x0) * 0.66f, y1 - bow, x1,
+                                      y1);
+            }
+            e->setPoints(std::move(points));
+            ctx.engine.actionLog.add("Map " + shape + " on layer " +
+                                         std::to_string(id),
+                                     "mapping", ctx.source, ctx.prompt);
+            return Result::good(plural(e->points.size(), "point", "points") +
+                                " placed in a " + shape);
+        }});
+
+    registry_.add({
+        "MapArea", {},
+        {{"layer", ParamType::Int, true, "extraction layer id"},
+         {"area", ParamType::Enum, true, "how each point samples",
+          {"point", "box", "gaussian"}},
+         {"radius", ParamType::Float, false, "as a percent of the surface"}},
+        Privilege::Operator, false, false,
+        "Sets how every point on a layer samples. Averaging is what stops "
+        "LED output flickering on detailed content (SPEC 13.2).",
+        [](Context& ctx) -> Result {
+            auto& store = ctx.engine.extractions;
+            const int id = static_cast<int>(ctx.number(0, 0));
+            Extraction* e = store.byId(id);
+            if (!e) return Result::bad("no extraction layer " + std::to_string(id));
+            const std::optional<SampleArea> area = sampleAreaFromName(ctx.text(1));
+            if (!area) return Result::bad("expected point, box or gaussian");
+            const float radius = ctx.arg(2)
+                                     ? static_cast<float>(ctx.number(2, 1) / 100.0)
+                                     : -1.f;
+            for (SamplePoint& p : e->points) {
+                p.area = *area;
+                if (radius >= 0.f) p.radius = radius;
+            }
+            return Result::good(plural(e->points.size(), "point", "points") +
+                                " sampling " + sampleAreaName(*area));
+        }});
+
+    registry_.add({
+        "MapMaster", {},
+        {{"layer", ParamType::Int, true, "extraction layer id"},
+         {"value", ParamType::Percent, true, "0-100"}},
+        Privilege::Operator, false, false,
+        "Sets an extraction layer's intensity master, so mapped content "
+        "fades like any playback (SPEC 13.3).",
+        [](Context& ctx) -> Result {
+            const int id = static_cast<int>(ctx.number(0, 0));
+            Extraction* e = ctx.engine.extractions.byId(id);
+            if (!e) return Result::bad("no extraction layer " + std::to_string(id));
+            e->master = pct(ctx.number(1, 100));
+            return Result::good("layer " + std::to_string(id) + " master " +
+                                std::to_string(static_cast<int>(ctx.number(1, 100))) +
+                                "%");
+        }});
+
+    registry_.add({
+        "MapMerge", {},
+        {{"layer", ParamType::Int, true, "extraction layer id"},
+         {"rule", ParamType::Enum, true, "htp or ltp", {"htp", "ltp"}},
+         {"priority", ParamType::Int, false, "higher resolves later"}},
+        Privilege::Operator, false, false,
+        "Sets how a layer resolves against cues and other layers — the same "
+        "mechanisms an executor has (SPEC 11.4, 13.3).",
+        [](Context& ctx) -> Result {
+            const int id = static_cast<int>(ctx.number(0, 0));
+            Extraction* e = ctx.engine.extractions.byId(id);
+            if (!e) return Result::bad("no extraction layer " + std::to_string(id));
+            const std::string rule = ctx.text(1);
+            if (rule == "htp") e->merge = MergeRule::HTP;
+            else if (rule == "ltp") e->merge = MergeRule::LTP;
+            else return Result::bad("expected htp or ltp");
+            if (ctx.arg(2)) e->priority = static_cast<int>(ctx.number(2, 0));
+            return Result::good("layer " + std::to_string(id) + " " + rule +
+                                " at priority " + std::to_string(e->priority));
         }});
 
     // ------------------------------------------------------- laser (§14.6)

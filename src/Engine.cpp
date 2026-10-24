@@ -471,7 +471,15 @@ void Engine::tick() {
     applySwapGroups(t);
 
     // 1. Playbacks, lowest priority first.
-    const OutputLayer playbacks = mergePlaybacks(t);
+    OutputLayer playbacks = mergePlaybacks(t);
+
+    // 1b. Pixel extraction, which is a playback too (§13.3). It merges into
+    //     the same accumulator by the same rules, so a cue CAN take priority
+    //     over mapped content and mapped content CAN htp over a wash. Done
+    //     here rather than as a later overwrite precisely so neither one is
+    //     privileged by where it sits in the pass.
+    if (!extractions.all().empty())
+        lastExtraction = extractions.mergeInto(frame, playbacks);
     merged_ = playbacks;
 
     // 2. Programmer on top, unconditionally.

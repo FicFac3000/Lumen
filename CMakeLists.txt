@@ -34,6 +34,7 @@ add_library(lumen_core
   src/Library.cpp
   src/Binding.cpp
   src/Undo.cpp
+  src/Mapping.cpp
   src/Mvr.cpp
   src/Output.cpp
   src/Input.cpp
@@ -168,6 +169,12 @@ target_link_libraries(test_laser PRIVATE lumen_core SQLite::SQLite3)
 target_include_directories(test_laser PRIVATE tests)
 target_compile_options(test_laser PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME laser COMMAND test_laser)
+
+add_executable(test_mapping tests/test_mapping.cpp)
+target_link_libraries(test_mapping PRIVATE lumen_core SQLite::SQLite3)
+target_include_directories(test_mapping PRIVATE tests)
+target_compile_options(test_mapping PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME mapping COMMAND test_mapping)
 
 add_executable(test_surface tests/test_surface.cpp)
 target_link_libraries(test_surface PRIVATE lumen_core SQLite::SQLite3)
