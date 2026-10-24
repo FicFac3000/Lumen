@@ -63,10 +63,30 @@ bool readRequest(int fd, std::string& out) {
     }
 }
 
+// A client that hangs up mid-write must not take the process with it.
+// Linux asks for the flag on every send; macOS and the BSDs set it once on
+// the socket instead and have no such flag, so a bare MSG_NOSIGNAL does not
+// compile there at all.
+#ifndef MSG_NOSIGNAL
+#define LUMEN_MSG_NOSIGNAL 0
+#else
+#define LUMEN_MSG_NOSIGNAL MSG_NOSIGNAL
+#endif
+
+void suppressSigpipe(int fd) {
+#ifdef SO_NOSIGPIPE
+    const int on = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#else
+    (void)fd;
+#endif
+}
+
 void sendAll(int fd, const std::string& data) {
     size_t sent = 0;
     while (sent < data.size()) {
-        const ssize_t n = ::send(fd, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+        const ssize_t n =
+            ::send(fd, data.data() + sent, data.size() - sent, LUMEN_MSG_NOSIGNAL);
         if (n <= 0) return;
         sent += static_cast<size_t>(n);
     }
@@ -145,6 +165,7 @@ bool HttpServer::poll(int timeoutMs) {
 
     const int client = ::accept(fd_, nullptr, nullptr);
     if (client < 0) return false;
+    suppressSigpipe(client);
 
     std::string raw;
     if (!readRequest(client, raw)) {
