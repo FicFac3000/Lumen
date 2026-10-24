@@ -41,9 +41,41 @@ int levelAt(const DmxInput& in, int universe, int channel) {
 
 const SourceInfo* findSource(const std::vector<SourceInfo>& all,
                              const std::string& name) {
-    for (const SourceInfo& s : all)
-        if (s.name == name) return &s;
-    return nullptr;
+    const SourceInfo* found = nullptr;
+    int matches = 0;
+    for (const SourceInfo& s : all) {
+        if (s.name != name) continue;
+        ++matches;
+        if (!found) found = &s;
+    }
+    // Two streams answering to one name means the packets were split between
+    // them, and every per-source count after this would be a coin toss. Say
+    // so rather than returning whichever sorted first.
+    if (matches > 1) {
+        std::printf("      !! %d sources named \"%s\":\n", matches, name.c_str());
+        for (const SourceInfo& s : all) {
+            if (s.name != name) continue;
+            std::printf("         cid %02x%02x%02x%02x  pkts %u  ooo %u  seq %u  "
+                        "active %d  term %d  lastSeen %.3f\n",
+                        s.cid[0], s.cid[1], s.cid[2], s.cid[3],
+                        unsigned(s.packets), unsigned(s.outOfOrder),
+                        unsigned(s.lastSequence), int(s.active), int(s.terminated));
+        }
+    }
+    return found;
+}
+
+// Dumps every source on a universe, for when a per-source count is not what
+// the test expected and the question is which stream got the packets.
+void dumpSources(const DmxInput& in, int universe, const char* why) {
+    std::printf("      -- sources on universe %d (%s):\n", universe, why);
+    for (const SourceInfo& s : in.sources(universe))
+        std::printf("         %-10s cid %02x%02x%02x%02x  pkts %u  ooo %u  "
+                    "rej %u  active %d  term %d  win %d\n",
+                    s.name.c_str(), s.cid[0], s.cid[1], s.cid[2], s.cid[3],
+                    unsigned(s.packets), unsigned(s.outOfOrder),
+                    unsigned(s.rejected), int(s.active), int(s.terminated),
+                    int(s.winning));
 }
 
 } // namespace
@@ -271,6 +303,7 @@ static void testTerminateReleasesImmediately() {
 
     const SourceInfo* main = findSource(in.sources(1), "Main");
     CHECK(main != nullptr);
+    if (main && !main->terminated) dumpSources(in, 1, "expected Main terminated");
     if (main) {
         CHECK(main->terminated);
         CHECK(!main->active);
@@ -310,6 +343,7 @@ static void testOutOfOrderPacketsAreDropped() {
 
     const SourceInfo* d = findSource(in.sources(1), "Desk");
     CHECK(d != nullptr);
+    if (d && d->packets != 4) dumpSources(in, 1, "expected Desk pkts 4 ooo 2");
     if (d) {
         CHECK_EQ(int(d->outOfOrder), 2);
         CHECK_EQ(int(d->packets), 4);

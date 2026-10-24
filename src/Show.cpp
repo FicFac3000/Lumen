@@ -18,7 +18,7 @@ namespace {
 // ---------------------------------------------------------------------------
 class Db {
 public:
-    ~Db() { close(); }
+    ~Db() { (void)close(); }
 
     bool open(const std::string& path, bool create) {
         const int flags = create ? (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
@@ -28,19 +28,44 @@ public:
             close();
             return false;
         }
-        // Crash safety is the whole reason for choosing SQLite, so make the
-        // guarantees explicit rather than relying on defaults.
-        exec("PRAGMA journal_mode=WAL");
+        // NOT WAL — and this was a real bug, found on the first macOS build.
+        //
+        // A show is written to a sibling temp file and then renamed over the
+        // old one, so that a crash mid-write cannot destroy the previous good
+        // show (§17.8). WAL mode breaks that outright: a WAL database is the
+        // main file PLUS a `-wal` sidecar, and renaming the main file alone
+        // leaves the committed data behind in a sidecar nobody renamed. The
+        // result is a file that opens fine and is missing its contents.
+        //
+        // It survived on Linux only because sqlite3_close() usually
+        // checkpoints and deletes the WAL in time; "usually" is not a
+        // guarantee, and on macOS it was not true. A silently incomplete show
+        // file is about the worst failure this program could have, so the
+        // journal mode is now one that keeps everything in the single file
+        // the rename moves.
+        exec("PRAGMA journal_mode=DELETE");
         exec("PRAGMA synchronous=FULL");
         exec("PRAGMA foreign_keys=ON");
         return true;
     }
 
-    void close() {
-        if (db_) {
-            sqlite3_close(db_);
+    // Returns false when SQLite refused to close — which happens when a
+    // statement was left unfinalised. That matters on the save path: a
+    // refused close means the file may not be complete, and renaming it over
+    // a good show would then destroy the good one.
+    bool close() {
+        if (!db_) return true;
+        const int rc = sqlite3_close(db_);
+        if (rc != SQLITE_OK) {
+            err_ = sqlite3_errmsg(db_);
+            // Hand the handle to SQLite to tear down once its statements die,
+            // rather than leaking it.
+            sqlite3_close_v2(db_);
             db_ = nullptr;
+            return false;
         }
+        db_ = nullptr;
+        return true;
     }
 
     bool exec(const std::string& sql) {
@@ -1430,7 +1455,10 @@ SaveReport ShowFile::save(const Engine& eng, const std::string& path,
     }
 
     if (!db.exec("COMMIT")) return fail("commit");
-    db.close();
+    // A close SQLite refuses means something is still holding the file, and
+    // the temp file may be incomplete. Renaming it over the previous show
+    // would then lose a good file to save a bad one.
+    if (!db.close()) return fail("close");
 
     // Replace the previous file only once a complete, committed one exists.
     std::filesystem::rename(tmp, path, ec);
