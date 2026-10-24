@@ -226,8 +226,7 @@ async def main(out):
                         f'at {still["x"]},{still["y"]}'))
 
         # Edit mode is a command too, and the button is a view of the page.
-        await pg.click(".canvas ~ * >> nth=0") if False else None
-        await pg.click(".wing-pages >> text=RUN")
+        await pg.click(".wing-pages >> text=Edit layout")
         await pg.wait_for_timeout(700)
         results.append((state()["surfaces"][1]["editMode"] is True,
                         "the mode button is a command", "page 2 in edit mode"))

@@ -1752,6 +1752,14 @@ either lands or does not.
 geometry decided. Shift-adding appends; re-picking an already-selected tile
 does not reorder.
 
+`[done-decision]` **The mode button is labelled with the action, not the
+state.** It first said `RUN` while in run mode and `EDIT` while editing —
+which is what both reference consoles do, and the first person to use this
+could not find it at all. "RUN" reads as a button that runs something. It now
+says *Edit layout* / *Finish editing*, with a padlock carrying the state. The
+general rule: a control whose label is its current state is a riddle, because
+the reader cannot tell whether the word describes what is or what will be.
+
 Run mode (§9.4) is enforced at the **command layer**, not in the interface. A
 lock only the UI respects is not a lock: a macro, a plugin or the agent would
 walk straight through it. `TileMove` and `Align` refuse on a page in run mode

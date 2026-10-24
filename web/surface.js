@@ -225,11 +225,16 @@ function buildCanvas(body, page) {
   // §9.4: edit mode shows the grid and the handles, run mode hides both.
   // Visible at a glance, never a hidden state — and enforced by the engine,
   // so this button is a view of the page rather than a local flag.
+  //
+  // Labelled with the ACTION, not the state. A button that said "RUN" while
+  // in run mode reads as a button that runs something, and the first person
+  // to use this could not find it at all. A padlock carries the state; the
+  // words carry what pressing it does.
   const edit = el('button', page.editMode ? 'on' : '',
-                  page.editMode ? 'EDIT' : 'RUN');
+                  page.editMode ? '\u{1f513} Finish editing' : '\u{1f512} Edit layout');
   edit.title = page.editMode
-    ? 'tiles can be moved and resized'
-    : 'tiles can only be operated';
+    ? 'tiles can be moved and resized — click to lock the surface'
+    : 'the surface is locked; click to move and resize tiles';
   edit.onclick = () => send('EditMode ' + (page.editMode ? 'off' : 'on') + ' ' + page.id);
   bar.appendChild(edit);
 
