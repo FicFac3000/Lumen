@@ -367,7 +367,9 @@ static void testEditingMakesTheExportLossyAndSaysSo() {
     // It names the cost rather than quietly shipping a thinner profile, and
     // the first line is the one that matters.
     CHECK(!x.dropped.empty());
+    CHECK(!x.dropped.empty());
     CHECK(x.dropped[0].find("regenerated") != std::string::npos);
+    CHECK(!x.dropped.empty());
     CHECK(x.dropped[0].find("rich.gdtf") != std::string::npos);
     bool mentionsModels = false, mentionsWheels = false;
     for (const auto& d : x.dropped) {
@@ -551,6 +553,7 @@ static void testLibrarySurvivesTheShowFile() {
     if (!loaded->tags.empty()) CHECK(loaded->tags[0] == "borrowed");
     CHECK_EQ(loaded->def.revisions.size(), size_t(1));
     if (!loaded->def.revisions.empty())
+        CHECK(!loaded->def.revisions.empty());
         CHECK(loaded->def.revisions[0].date == "2026-10-21");
 
     // The package survived the show file BYTE FOR BYTE. Anything less and a
@@ -604,7 +607,9 @@ static void testLibraryThroughTheConsole() {
     Result ls = con.execute("List library");
     CHECK(ls.ok);
     CHECK_EQ(ls.rows.size(), size_t(1));
+    CHECK(!ls.rows.empty());
     CHECK(ls.rows[0].find("Rich Spot") != std::string::npos);
+    CHECK(!ls.rows.empty());
     CHECK(ls.rows[0].find("console.gdtf") != std::string::npos);
 
     // Patch it and run it, which is the only thing importing is for.

@@ -273,10 +273,12 @@ static void testGroupsPresetsRecipesRoundTrip() {
     CHECK_EQ(stat->members.size(), size_t(3));
     // Capture order is information (it drives FX spread), so it must survive
     // in order rather than being sorted on the way through.
+    CHECK(!stat->members.empty());
     CHECK_EQ(int(stat->members[0].fixture), 3);
     CHECK_EQ(int(stat->members[1].fixture), 1);
     CHECK_EQ(int(stat->members[2].fixture), 2);
     CHECK_EQ(stat->tags.size(), size_t(1));
+    CHECK(!stat->tags.empty());
     CHECK(stat->tags[0] == "truss");
 
     const GroupDef* dyn = b.groups.byName("All Spots");
@@ -301,7 +303,9 @@ static void testGroupsPresetsRecipesRoundTrip() {
     // Overrides are sticky by fixture UID in both directions.
     CHECK_EQ(dyn->excludes.size(), size_t(1));
     CHECK_EQ(dyn->includes.size(), size_t(1));
+    CHECK(!dyn->excludes.empty());
     CHECK(dyn->excludes[0] == b.patch.find(2)->uid);
+    CHECK(!dyn->includes.empty());
     CHECK(dyn->includes[0] == b.patch.find(20)->uid);
 
     // A dynamic group resolves against the reloaded patch, which is the real
@@ -321,6 +325,7 @@ static void testGroupsPresetsRecipesRoundTrip() {
     CHECK(nest != nullptr);
     CHECK(nest->isNested());
     CHECK_EQ(nest->children.size(), size_t(2));
+    CHECK(!nest->children.empty());
     CHECK(nest->children[0] == stat->uid);
     CHECK(nest->children[1] == dyn->uid);
     // Nesting survives as a tree, not a flattened list (§20.6).
@@ -412,6 +417,7 @@ static void testGroupsPresetsRecipesRoundTrip() {
     const Slot& s1 = rc->slots[1];
     CHECK(s1.gen.kind == GenKind::Steps);
     CHECK_EQ(s1.gen.steps.size(), size_t(2));
+    CHECK(!s1.gen.steps.empty());
     CHECK_NEAR(s1.gen.steps[0].decayCurve, -0.4f);
     CHECK(!s1.soloed);
 
@@ -535,6 +541,7 @@ static void testRoundTrip() {
         CHECK_NEAR(fb->rotZ, fa->rotZ);
         CHECK(fb->positioned);
         CHECK_EQ(fb->tags.size(), size_t(1));
+        CHECK(!fb->tags.empty());
         CHECK(fb->tags[0] == "upstage");
     }
     // Lookup by UID works after the round trip, which is what cues rely on.
@@ -554,6 +561,7 @@ static void testRoundTrip() {
     CHECK_EQ(spin.size(), size_t(5));
     CHECK(spin[2].name == "Stop");
     CHECK(spin[2].anchor);  // the anchor flag the auto-stepper keys off
+    CHECK(!spin.empty());
     CHECK_NEAR(spin[0].physFrom, -30.0);
 
     // --- sequence and cues ------------------------------------------------
@@ -566,14 +574,17 @@ static void testRoundTrip() {
     CHECK(sb->uid == a.sequence(1)->uid);
 
     CHECK_NEAR(sb->cues[1].timing.fadeIn, 2.5);
+    CHECK(!sb->cues.empty());
     CHECK(sb->cues[0].timing.curve == FadeCurve::SCurve);
     CHECK(sb->cues[2].shield);
+    CHECK(!sb->cues.empty());
     CHECK(!sb->cues[0].shield);
 
     // Per-group tracking masks survive, which the five-cell cue-sheet strip
     // reads (§11.1).
     CHECK(sb->cues[1].trackMode(Group::Color) == TrackMode::Block);
     CHECK(sb->cues[1].trackMode(Group::Position) == TrackMode::Track);
+    CHECK(!sb->cues.empty());
     CHECK(sb->cues[0].trackMode(Group::Color) == TrackMode::Track);
 
     // --- values, including both axes --------------------------------------
@@ -594,7 +605,9 @@ static void testRoundTrip() {
 
     // --- parts ------------------------------------------------------------
     CHECK_EQ(sb->cues[0].parts.size(), size_t(2));
+    CHECK(!sb->cues.empty());
     CHECK_NEAR(sb->cues[0].timingForPart(1).fadeIn, 9.0);
+    CHECK(!sb->cues.empty());
     CHECK(sb->cues[0].parts[1].values.has(4, 0, Attr::Dimmer));
 
     // --- phasers ----------------------------------------------------------
@@ -628,7 +641,9 @@ static void testRoundTrip() {
     CHECK(st.gen.kind == GenKind::Steps);
     CHECK(st.role == Role::AxisX);
     CHECK_EQ(st.gen.steps.size(), size_t(2));
+    CHECK(!st.gen.steps.empty());
     CHECK_NEAR(st.gen.steps[0].attack, 0.1);
+    CHECK(!st.gen.steps.empty());
     CHECK_NEAR(st.gen.steps[0].decayCurve, -0.5);
 
     const Phaser& cv = sb->cues[2].phasers[0];
@@ -636,6 +651,7 @@ static void testRoundTrip() {
     CHECK_EQ(cv.gen.curve.size(), size_t(3));
     CHECK_NEAR(cv.gen.curve[1].y, 1.0);
     CHECK_NEAR(cv.gen.curve[1].inDx, -0.2);
+    CHECK(!cv.targets.empty());
     CHECK_EQ(cv.targets[0].cell, CellId(5));
 
     // --- executors --------------------------------------------------------
@@ -947,12 +963,15 @@ static void testSurfacesRoundTrip() {
     CHECK(canvas != nullptr);
     CHECK(canvas->style == SurfaceStyle::Canvas);
     CHECK_EQ(canvas->tiles.size(), size_t(2));
+    CHECK(!canvas->tiles.empty());
     CHECK_EQ(canvas->tiles[0].rect.w, 3);
+    CHECK(!canvas->tiles.empty());
     CHECK_EQ(canvas->tiles[0].rect.h, 2);
     CHECK_EQ(canvas->tiles[1].rect.x, 3);
 
     // Targets are UIDs, so they survive identically — the legend is a view
     // of the object, not a copy of its name (§8.1, §9.2).
+    CHECK(!canvas->tiles.empty());
     CHECK(canvas->tiles[0].target == a.surfaces.byId(2)->tiles[0].target);
     CHECK(wing->atSlot(0)->uid == a.surfaces.byId(1)->atSlot(0)->uid);
 
